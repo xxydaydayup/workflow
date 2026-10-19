@@ -1,0 +1,36 @@
+@import './less/variables.less';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 360px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: @color-canvas;
+  color: @color-text-primary;
+  font-family: Inter, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+:focus-visible {
+  outline: 2px solid #6b9d8a;
+  outline-offset: 2px;
+}
+::selection {
+  background: #d9e9e1;
+  color: #263b34;
+}

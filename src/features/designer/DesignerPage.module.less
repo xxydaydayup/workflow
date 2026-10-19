@@ -1,0 +1,422 @@
+.page {
+  display: flex;
+  min-height: calc(100vh - 110px);
+  flex-direction: column;
+  gap: 20px;
+}
+.pageHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.eyebrow {
+  margin-bottom: 8px;
+  color: #87958f;
+  font-size: 10px;
+}
+.eyebrow span {
+  margin: 0 6px;
+  color: #c1cbc6;
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.titleRow h1 {
+  margin: 0;
+  color: #263b34;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.5px;
+}
+.draftTag {
+  margin: 0;
+  border: 1px solid #ecd9b5;
+  background: #fbf4e7;
+  color: #a87528;
+  font-size: 9px;
+  line-height: 18px;
+}
+.saved {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  color: #91a099;
+  font-size: 9px;
+}
+.saved :global(.anticon) {
+  color: #4c9a76;
+}
+.subtitle {
+  margin: 7px 0 0;
+  color: #84918c;
+  font-size: 11px;
+}
+.headActions {
+  display: flex;
+  gap: 8px;
+}
+.headActions :global(.ant-btn) {
+  height: 32px;
+  padding: 0 12px;
+  border-color: #dfe5e2;
+  font-size: 10px;
+}
+.headActions :global(.ant-btn-primary) {
+  border-color: #315f53;
+  background: #315f53;
+}
+.editor {
+  display: flex;
+  min-height: 560px;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e3e8e6;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(36, 54, 47, 0.025);
+}
+.toolbar {
+  display: flex;
+  height: 48px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 15px;
+  border-bottom: 1px solid #edf0ef;
+}
+.toolbarLeft,
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.flowIcon {
+  display: grid;
+  width: 23px;
+  height: 23px;
+  place-items: center;
+  border-radius: 6px;
+  background: #eef4f1;
+  color: #315f53;
+  font-size: 12px;
+}
+.toolbarLeft strong {
+  color: #40524a;
+  font-size: 10px;
+}
+.separator {
+  width: 1px;
+  height: 17px;
+  margin: 0 2px;
+  background: #e6ebe8;
+}
+.meta {
+  color: #929f99;
+  font-size: 9px;
+}
+.meta b {
+  margin-left: 3px;
+  color: #55675f;
+  font-weight: 600;
+}
+.toolbarRight :global(.ant-btn) {
+  height: 27px;
+  border-color: #e2e8e5;
+  color: #50635a;
+  font-size: 9px;
+}
+.zoomHint {
+  color: #9aa6a1;
+  font-size: 9px;
+}
+.editorBody {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.canvas {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  background: #f8faf9;
+}
+.canvas > :global(.react-flow) {
+  position: absolute;
+  inset: 0;
+}
+.canvasLabel {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  left: 17px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #788780;
+  font-size: 9px;
+  pointer-events: none;
+}
+.canvasLabel span:not(.liveDot) {
+  color: #bbc4c0;
+}
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #45a77c;
+}
+.canvasLegend {
+  position: absolute;
+  z-index: 2;
+  right: 16px;
+  bottom: 14px;
+  display: flex;
+  gap: 13px;
+  padding: 7px 9px;
+  border: 1px solid #e7ecea;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #75837d;
+  font-size: 8px;
+  pointer-events: none;
+}
+.canvasLegend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.canvasLegend i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid;
+  border-radius: 2px;
+}
+.greenKey {
+  border-color: #68a98a !important;
+  background: #eaf5ee;
+}
+.amberKey {
+  border-color: #d8a85e !important;
+  background: #fff5df;
+}
+.blueKey {
+  border-color: #86a6c1 !important;
+  background: #edf5fa;
+}
+.canvas :global(.react-flow__node) {
+  min-width: 106px;
+  padding: 12px 14px;
+  border: 1px solid #d7dfdb;
+  border-radius: 7px;
+  box-shadow: 0 2px 5px rgba(39, 55, 47, 0.055);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+.canvas :global(.react-flow__node.selected) {
+  box-shadow:
+    0 0 0 2px rgba(49, 95, 83, 0.12),
+    0 2px 6px rgba(39, 55, 47, 0.08);
+}
+.canvas :global(.react-flow__edge-text) {
+  fill: #788780;
+  font-size: 9px;
+}
+.canvas :global(.react-flow__edge-textbg) {
+  fill: #f8faf9;
+}
+.canvas :global(.react-flow__controls) {
+  overflow: hidden;
+  border: 1px solid #e4e9e7;
+  border-radius: 6px;
+  box-shadow: 0 2px 5px rgba(39, 55, 47, 0.04);
+}
+.canvas :global(.react-flow__controls-button) {
+  width: 25px;
+  height: 25px;
+  border-bottom-color: #edf0ef;
+}
+.canvas :global(.react-flow__minimap) {
+  overflow: hidden;
+  border: 1px solid #e2e8e5;
+  border-radius: 6px;
+}
+.properties {
+  display: flex;
+  width: 248px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  border-left: 1px solid #edf0ef;
+  background: #fff;
+}
+.panelHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 17px 15px 13px;
+}
+.panelHead strong,
+.panelSubhead strong {
+  display: block;
+  color: #40524a;
+  font-size: 10px;
+  font-weight: 650;
+}
+.panelHead span,
+.panelSubhead span {
+  display: block;
+  margin-top: 4px;
+  color: #9aa6a1;
+  font-size: 8px;
+}
+.panelHead button {
+  border: 0;
+  background: none;
+  color: #82918a;
+  font-size: 16px;
+  cursor: pointer;
+}
+.panelSection {
+  display: grid;
+  gap: 8px;
+  padding: 0 15px 15px;
+}
+.panelSection label {
+  margin-top: 3px;
+  color: #77857f;
+  font-size: 9px;
+}
+.panelSection label em {
+  color: #c77d61;
+  font-style: normal;
+}
+.panelSection :global(.ant-input),
+.panelSection :global(.ant-select-selector) {
+  min-height: 29px !important;
+  border-color: #e6ebe8 !important;
+  border-radius: 5px !important;
+  font-size: 9px !important;
+}
+.panelSection :global(.ant-input) {
+  padding: 5px 8px;
+}
+.panelSection :global(.ant-select-selection-item) {
+  font-size: 9px;
+  line-height: 27px !important;
+}
+.panelSection :global(textarea.ant-input) {
+  min-height: 57px;
+  resize: vertical;
+}
+.panelDivider {
+  height: 1px;
+  margin: 0 15px 14px;
+  background: #edf0ef;
+}
+.panelSubhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.panelSubhead span {
+  margin: 0;
+}
+.nodeConfig {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 9px;
+  border: 1px solid #e7ece9;
+  border-radius: 5px;
+}
+.nodeType {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #586961;
+  font-size: 9px;
+}
+.nodeType i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid #d8a85e;
+  border-radius: 2px;
+  background: #fff5df;
+}
+.nodeArrow {
+  color: #9aa6a1;
+  font-size: 16px;
+}
+.configNote {
+  color: #96a29c;
+  font-size: 8px;
+  line-height: 1.6;
+}
+.configureButton {
+  justify-self: start;
+  height: auto;
+  padding: 0;
+  color: #416f61;
+  font-size: 9px;
+}
+.configureButton span {
+  margin-left: 3px;
+}
+.panelFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding: 13px 15px;
+  border-top: 1px solid #edf0ef;
+  color: #94a099;
+  font-size: 8px;
+}
+.panelFooter strong {
+  color: #586961;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+@media (max-width: 1000px) {
+  .properties {
+    width: 220px;
+  }
+  .zoomHint {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .page {
+    min-height: calc(100vh - 84px);
+  }
+  .pageHead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .editor {
+    min-height: 620px;
+  }
+  .editorBody {
+    flex-direction: column;
+  }
+  .canvas {
+    min-height: 390px;
+  }
+  .properties {
+    width: 100%;
+    border-top: 1px solid #edf0ef;
+    border-left: 0;
+  }
+  .panelFooter {
+    display: none;
+  }
+}
