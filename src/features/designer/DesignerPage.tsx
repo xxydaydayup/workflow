@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { DragEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Background,
   BackgroundVariant,
   Controls,
   Handle,
+  MarkerType,
   MiniMap,
   Position,
   ReactFlow,
+  ReactFlowProvider,
   addEdge,
+  useReactFlow,
   useEdgesState,
   useNodesState,
   type Connection,
@@ -68,7 +72,7 @@ type Shared = {
   selectNode: (e: unknown, n: PNode) => void
   selectEdge: (e: unknown, f: PEdge) => void
   clear: () => void
-  add: (kind: Kind) => void
+  add: (kind: Kind, position?: { x: number; y: number }) => void
   connect: (s?: string, t?: string) => void
   fields: FieldsProps
   inspector: InspectorProps
@@ -100,7 +104,7 @@ const variants: Array<{ id: Variant; label: string }> = [
 const nodeTypes = { processNode: FlowNode }
 function FlowNode({ data, selected }: { data: Data; selected: boolean }) {
   return (
-    <div className={styles.nodeWrap}>
+    <div className={`${styles.nodeWrap} ${styles['node' + data.kind]}`}>
       {data.kind !== 'startEvent' && (
         <Handle type="target" position={Position.Left} className={styles.handle} />
       )}
@@ -179,12 +183,24 @@ function makeEdges(): PEdge[] {
       data: { conditionExpression: '${leaveDays <= 3}' },
     },
     { id: 'flow_5', source: 'task_hr', target: 'end_done', type: 'smoothstep', data: {} },
-  ]
+  ].map((edge) => ({
+    ...edge,
+    style: { stroke: '#718e7d', strokeWidth: 2 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
+  }))
 }
 function makeId(prefix: string) {
   return prefix + '_' + Math.random().toString(36).slice(2, 7)
 }
-function Palette({ add, compact = false }: { add: Shared['add']; compact?: boolean }) {
+function Palette({
+  add,
+  compact = false,
+  draggable = false,
+}: {
+  add: Shared['add']
+  compact?: boolean
+  draggable?: boolean
+}) {
   return (
     <div className={styles.palette + (compact ? ' ' + styles.compact : '')}>
       {!compact && (
@@ -193,7 +209,15 @@ function Palette({ add, compact = false }: { add: Shared['add']; compact?: boole
         </div>
       )}
       {kinds.map((k, i) => (
-        <button key={k.kind} onClick={() => add(k.kind)}>
+        <button
+          key={k.kind}
+          draggable={draggable}
+          onDragStart={(event) => {
+            event.dataTransfer.setData('application/x-process-node', k.kind)
+            event.dataTransfer.effectAllowed = 'move'
+          }}
+          onClick={() => add(k.kind)}
+        >
           <i className={styles['p' + i]}>{['开', '审', '判', '终'][i]}</i>
           {k.label}
           <PlusOutlined />
@@ -312,11 +336,54 @@ function Header({
     </header>
   )
 }
+function InteractiveFlow({ s }: { s: Shared }) {
+  const { screenToFlowPosition } = useReactFlow()
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const kind = event.dataTransfer.getData('application/x-process-node') as Kind
+    if (!kinds.some((item) => item.kind === kind)) return
+    s.add(kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }))
+  }
+  return (
+    <ReactFlow
+      nodes={s.nodes}
+      edges={s.edges}
+      nodeTypes={nodeTypes}
+      onNodesChange={s.onNodesChange}
+      onEdgesChange={s.onEdgesChange}
+      onConnect={s.onConnect}
+      connectionDragThreshold={1}
+      defaultEdgeOptions={{
+        type: 'smoothstep',
+        style: { stroke: '#718e7d', strokeWidth: 2 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
+      }}
+      onNodeClick={s.selectNode}
+      onEdgeClick={s.selectEdge}
+      onPaneClick={s.clear}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      }}
+      onDrop={onDrop}
+      fitView
+      fitViewOptions={{ padding: 0.2 }}
+      proOptions={{ hideAttribution: true }}
+    >
+      <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#dce6e1" />
+      <Controls position="bottom-left" />
+      <MiniMap
+        position="bottom-right"
+        nodeColor={(n) => ((n.data as Data).kind === 'userTask' ? '#d9a85b' : '#73a18e')}
+      />
+    </ReactFlow>
+  )
+}
 function Canvas({ s }: { s: Shared }) {
   return (
     <div className={styles.canvasLayout}>
       <aside className={styles.left}>
-        <Palette add={s.add} />
+        <Palette add={s.add} draggable />
         <p>
           从节点边缘拖出连线
           <br />
@@ -334,28 +401,10 @@ function Canvas({ s }: { s: Shared }) {
           </Button>
         </div>
         <div className={styles.flow}>
-          <ReactFlow
-            nodes={s.nodes}
-            edges={s.edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={s.onNodesChange}
-            onEdgesChange={s.onEdgesChange}
-            onConnect={s.onConnect}
-            onNodeClick={s.selectNode}
-            onEdgeClick={s.selectEdge}
-            onPaneClick={s.clear}
-            fitView
-            fitViewOptions={{ padding: 0.2 }}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#dce6e1" />
-            <Controls position="bottom-left" />
-            <MiniMap
-              position="bottom-right"
-              nodeColor={(n) => ((n.data as Data).kind === 'userTask' ? '#d9a85b' : '#73a18e')}
-            />
-          </ReactFlow>
-          <span className={styles.flowTip}>示例流程 · 点击节点编辑</span>
+          <ReactFlowProvider>
+            <InteractiveFlow s={s} />
+          </ReactFlowProvider>
+          <span className={styles.flowTip}>节点可从左侧拖入 · 点击连接点并拖到另一节点连线</span>
         </div>
       </div>
       <aside className={styles.right}>
@@ -596,7 +645,7 @@ export function DesignerPage() {
     [setParams],
   )
   const add = useCallback(
-    (kind: Kind) => {
+    (kind: Kind, position?: { x: number; y: number }) => {
       const prefix =
         kind === 'userTask'
           ? 'task'
@@ -619,7 +668,10 @@ export function DesignerPage() {
         {
           id,
           type: 'processNode',
-          position: { x: 220 + (cur.length % 3) * 190, y: 180 + Math.floor(cur.length / 3) * 120 },
+          position: position ?? {
+            x: 220 + (cur.length % 3) * 190,
+            y: 180 + Math.floor(cur.length / 3) * 120,
+          },
           data: { kind, name, ...(kind === 'userTask' ? { assignee: '' } : {}) },
         },
       ])
@@ -634,14 +686,37 @@ export function DesignerPage() {
       setEdges((cur) =>
         cur.some((e) => e.source === source && e.target === target)
           ? cur
-          : addEdge({ id: makeId('flow'), source, target, type: 'smoothstep', data: {} }, cur),
+          : addEdge(
+              {
+                id: makeId('flow'),
+                source,
+                target,
+                type: 'smoothstep',
+                style: { stroke: '#718e7d', strokeWidth: 2 },
+                markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
+                data: {},
+              },
+              cur,
+            ),
       )
     },
     [setEdges],
   )
   const onConnect = useCallback(
     (c: Connection) =>
-      setEdges((cur) => addEdge({ ...c, id: makeId('flow'), type: 'smoothstep', data: {} }, cur)),
+      setEdges((cur) =>
+        addEdge(
+          {
+            ...c,
+            id: makeId('flow'),
+            type: 'smoothstep',
+            style: { stroke: '#4f8664', strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#4f8664' },
+            data: {},
+          },
+          cur,
+        ),
+      ),
     [setEdges],
   )
   const updateNode = (key: 'name' | 'assignee', value: string) => {

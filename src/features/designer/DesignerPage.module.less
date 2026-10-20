@@ -123,6 +123,12 @@
   font-size: 10px;
   cursor: pointer;
 }
+.palette > button[draggable='true'] {
+  cursor: grab;
+}
+.palette > button[draggable='true']:active {
+  cursor: grabbing;
+}
 .palette > button:hover {
   border-color: #e4ebe7;
   background: #f8faf9;
@@ -237,15 +243,42 @@
   position: relative;
   display: flex;
   width: 150px;
+  min-height: 56px;
   justify-content: center;
   align-items: center;
 }
 .handle {
-  width: 8px !important;
-  height: 8px !important;
-  border: 2px solid #fff !important;
-  background: #789b88 !important;
-  box-shadow: 0 0 0 1px #91aa9c;
+  z-index: 5;
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px !important;
+  min-height: 36px !important;
+  border: 9px solid #fff !important;
+  background: #5d9272 !important;
+  box-sizing: border-box;
+  box-shadow:
+    0 0 0 1px #6f9f81,
+    0 1px 4px rgba(38, 79, 52, 0.25);
+  cursor: crosshair !important;
+  pointer-events: all !important;
+}
+.nodeuserTask :global(.react-flow__handle-left) {
+  left: -4px !important;
+}
+.nodeuserTask :global(.react-flow__handle-right) {
+  right: -4px !important;
+}
+.nodestartEvent :global(.react-flow__handle-right) {
+  right: calc(50% - 19.5px) !important;
+}
+.nodeendEvent :global(.react-flow__handle-left) {
+  left: calc(50% - 19.5px) !important;
+}
+.nodeexclusiveGateway :global(.react-flow__handle-left) {
+  left: calc(50% - 27px) !important;
+}
+.nodeexclusiveGateway :global(.react-flow__handle-right) {
+  right: calc(50% - 27px) !important;
 }
 .task {
   display: flex;
