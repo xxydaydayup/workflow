@@ -253,14 +253,25 @@
   height: 36px !important;
   min-width: 36px !important;
   min-height: 36px !important;
-  border: 9px solid #fff !important;
-  background: #5d9272 !important;
+  border: 0 !important;
+  background: transparent !important;
   box-sizing: border-box;
-  box-shadow:
-    0 0 0 1px #6f9f81,
-    0 1px 4px rgba(38, 79, 52, 0.25);
   cursor: crosshair !important;
   pointer-events: all !important;
+}
+.handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #fff;
+  border-radius: 50%;
+  background: #5d9272;
+  box-shadow: 0 0 0 1px #6f9f81;
+  content: '';
+  pointer-events: none;
 }
 .nodeuserTask :global(.react-flow__handle-left) {
   left: -4px !important;
