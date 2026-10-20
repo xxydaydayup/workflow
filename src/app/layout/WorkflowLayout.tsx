@@ -56,7 +56,7 @@ export function WorkflowLayout() {
             <span />
             <div>
               <strong>本地演示</strong>
-              <small>示例数据 · 未连接后端</small>
+              <small>设计器支持转换与部署 · 监控为演示</small>
             </div>
             <span className={styles.chevron}>⌄</span>
           </div>

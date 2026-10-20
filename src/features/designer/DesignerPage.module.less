@@ -58,7 +58,9 @@
 }
 .headerActions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 16px;
 }
 .headerActions > span {
@@ -70,6 +72,10 @@
   border-color: #dce5e0;
   color: #365d4d;
   font-size: 11px;
+}
+.headerActions :global(.ant-btn-primary) {
+  border-color: #315f53;
+  color: #fff;
 }
 .canvasLayout {
   display: flex;
@@ -249,35 +255,33 @@
 }
 .handle {
   z-index: 5;
-  width: 36px !important;
-  height: 36px !important;
-  min-width: 36px !important;
-  min-height: 36px !important;
-  border: 0 !important;
-  background: transparent !important;
+  width: 8px !important;
+  height: 8px !important;
+  min-width: 8px !important;
+  min-height: 8px !important;
+  border: 1px solid #fff !important;
+  background: #5d9272 !important;
   box-sizing: border-box;
+  box-shadow: 0 0 0 1px #6f9f81;
   cursor: crosshair !important;
   pointer-events: all !important;
 }
-.handle::after {
+.handle::before {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 8px;
-  height: 8px;
+  width: 36px;
+  height: 36px;
   transform: translate(-50%, -50%);
-  border: 1px solid #fff;
   border-radius: 50%;
-  background: #5d9272;
-  box-shadow: 0 0 0 1px #6f9f81;
   content: '';
-  pointer-events: none;
+  pointer-events: all;
 }
 .nodeuserTask :global(.react-flow__handle-left) {
-  left: -4px !important;
+  left: 0 !important;
 }
 .nodeuserTask :global(.react-flow__handle-right) {
-  right: -4px !important;
+  right: 0 !important;
 }
 .nodestartEvent :global(.react-flow__handle-right) {
   right: calc(50% - 19.5px) !important;
@@ -319,6 +323,14 @@
 }
 .task > b {
   font-weight: 600;
+}
+.nodeBadge {
+  position: absolute;
+  right: 7px;
+  bottom: 5px;
+  color: #87958c;
+  font-size: 7px;
+  line-height: 1;
 }
 .selected {
   outline: 3px solid rgba(78, 132, 101, 0.15);
@@ -417,6 +429,12 @@
   color: #a0aaa4;
   font-size: 8px;
 }
+.fields .fieldError {
+  margin-top: -5px;
+  color: #c45f54;
+  font-size: 8px;
+  line-height: 1.5;
+}
 .fields :global(.ant-input),
 .inspector :global(.ant-input),
 .inspector :global(.ant-input-affix-wrapper) {
@@ -461,6 +479,165 @@
   color: #8c9992;
   font-size: 9px;
   line-height: 1.65;
+}
+.taskOptions {
+  display: grid;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 9px;
+  border: 1px solid #edf1ef;
+  border-radius: 6px;
+  background: #fafcfb;
+}
+.taskOptions > span {
+  color: #829087;
+  font-size: 8px;
+  line-height: 1.6;
+}
+.taskOptions :global(.ant-btn) {
+  justify-self: start;
+  font-size: 9px;
+}
+.modalSubtitle {
+  margin-left: 8px;
+  color: #8c9992;
+  font-size: 10px;
+  font-weight: 400;
+}
+.advancedPanel {
+  min-height: 300px;
+  padding-top: 4px;
+}
+.advancedIntro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #78877e;
+  font-size: 10px;
+}
+.advancedIntro :global(.ant-btn) {
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+.advancedEmpty {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  color: #9aa59f;
+  font-size: 10px;
+}
+.fieldList,
+.listenerList {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 12px;
+  padding-right: 3px;
+}
+.fieldCard {
+  padding: 11px;
+  border: 1px solid #e7ede9;
+  border-radius: 7px;
+  background: #fcfdfc;
+}
+.fieldCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: #53645a;
+  font-size: 10px;
+}
+.fieldGrid,
+.multiGrid {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 10px;
+}
+.fieldGrid > label,
+.multiGrid > label,
+.constraintList > label {
+  color: #74837a;
+  font-size: 9px;
+}
+.multiGrid > label i {
+  margin-left: 4px;
+  color: #bf7455;
+  font-size: 8px;
+  font-style: normal;
+}
+.fieldGrid :global(.ant-select),
+.multiGrid :global(.ant-select) {
+  width: 100%;
+}
+.fieldGrid > :global(.ant-input),
+.fieldGrid > :global(.ant-input-textarea),
+.multiGrid > :global(.ant-input),
+.multiGrid > :global(.ant-input-textarea) {
+  width: 100%;
+}
+.constraintList {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid #edf1ef;
+}
+.constraintList > label {
+  display: grid;
+  gap: 5px;
+}
+.switchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px;
+  border: 1px solid #e7ede9;
+  border-radius: 7px;
+  background: #fcfdfc;
+}
+.switchRow > span {
+  display: grid;
+  gap: 4px;
+}
+.switchRow b {
+  color: #53645a;
+  font-size: 10px;
+}
+.switchRow small,
+.multiGrid > small {
+  color: #929e97;
+  font-size: 9px;
+}
+.multiGrid {
+  margin-top: 14px;
+}
+.multiGrid > small {
+  grid-column: 2;
+}
+.listenerRow {
+  display: grid;
+  grid-template-columns: 95px 125px minmax(140px, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid #e7ede9;
+  border-radius: 6px;
+  background: #fcfdfc;
+}
+.listenerRow > :global(.ant-select) {
+  width: 100%;
+}
+.schemaIssues {
+  margin: 0;
+  padding-left: 18px;
+}
+.schemaIssues li + li {
+  margin-top: 3px;
 }
 .inspector > :global(.ant-btn) {
   justify-self: start;

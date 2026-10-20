@@ -26,30 +26,40 @@ import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
   CheckCircleFilled,
-  CheckOutlined,
-  CloseOutlined,
+  CloudUploadOutlined,
   CodeOutlined,
-  CopyOutlined,
   DeleteOutlined,
   PlusOutlined,
   ShareAltOutlined,
 } from '@ant-design/icons'
-import { Button, Input, Select, Tag, message } from 'antd'
+import { Button, Input, Modal, Select, Switch, Tabs, Tag } from 'antd'
+import type {
+  BpmnFormField as FormField,
+  BpmnFormFieldConstraint as FormFieldConstraint,
+  BpmnFormFieldType as FormFieldType,
+  BpmnJSONRequest as DTO,
+  BpmnMultiInstance as MultiInstance,
+  BpmnNodeType as Kind,
+  BpmnTaskListener as TaskListener,
+} from '@/api/bpmn'
+import type { TaskTemplate } from '@/api/workflow'
+import { ProcessExportDrawer, type ExportFormat } from './ProcessExportDrawer'
 import styles from './DesignerPage.module.less'
 import '@xyflow/react/dist/style.css'
 
-type Kind = 'startEvent' | 'userTask' | 'exclusiveGateway' | 'endEvent'
-type Data = { kind: Kind; name: string; assignee?: string }
+type Data = {
+  kind: Kind
+  name: string
+  assignee?: string
+  formKey?: string
+  multiInstance?: MultiInstance
+  taskListeners?: TaskListener[]
+  formFields?: FormField[]
+}
 type FlowData = { conditionExpression?: string }
 type PNode = Node<Data, 'processNode'>
 type PEdge = Edge<FlowData>
 type Variant = 'canvas' | 'steps' | 'structure'
-type DTO = {
-  processId: string
-  processName: string
-  nodes: Array<{ id: string; type: Kind; name: string; x: number; y: number; assignee?: string }>
-  flows: Array<{ id: string; source: string; target: string; conditionExpression?: string }>
-}
 type FieldsProps = {
   processId: string
   processName: string
@@ -59,9 +69,10 @@ type FieldsProps = {
 type InspectorProps = {
   node?: PNode
   edge?: PEdge
-  onNode: (key: 'name' | 'assignee', value: string) => void
+  onNode: (key: 'name' | 'assignee' | 'formKey', value: string) => void
   onEdge: (value: string) => void
   onDelete: () => void
+  onAdvanced: () => void
 }
 type Shared = {
   nodes: PNode[]
@@ -102,6 +113,30 @@ const variants: Array<{ id: Variant; label: string }> = [
   { id: 'structure', label: '结构清单' },
 ]
 const nodeTypes = { processNode: FlowNode }
+const fieldTypes: Array<{ value: FormFieldType; label: string }> = [
+  { value: 'string', label: '文本' },
+  { value: 'long', label: '整数' },
+  { value: 'boolean', label: '布尔值' },
+  { value: 'date', label: '日期' },
+  { value: 'enum', label: '枚举' },
+]
+const listenerEvents = [
+  { value: 'create', label: '创建' },
+  { value: 'assignment', label: '指派' },
+  { value: 'complete', label: '完成' },
+  { value: 'delete', label: '删除' },
+] as const
+const listenerTypes = [
+  { value: 'class', label: 'Java 类' },
+  { value: 'expression', label: '表达式' },
+  { value: 'delegateExpression', label: '委托 Bean' },
+] as const
+const fieldConstraints = [
+  { value: 'required', label: '必填' },
+  { value: 'readonly', label: '只读' },
+  { value: 'minlength', label: '最小长度' },
+  { value: 'maxlength', label: '最大长度' },
+] as const
 function FlowNode({ data, selected }: { data: Data; selected: boolean }) {
   return (
     <div className={`${styles.nodeWrap} ${styles['node' + data.kind]}`}>
@@ -119,6 +154,13 @@ function FlowNode({ data, selected }: { data: Data; selected: boolean }) {
         <div className={styles.task + (selected ? ' ' + styles.selected : '')}>
           <i>✓</i>
           {data.name}
+          {data.multiInstance?.enable || data.formFields?.length || data.taskListeners?.length ? (
+            <small className={styles.nodeBadge}>
+              {data.multiInstance?.enable ? '会签' : ''}
+              {data.formFields?.length ? '表单' : ''}
+              {data.taskListeners?.length ? '监听' : ''}
+            </small>
+          ) : null}
         </div>
       )}
       {data.kind === 'exclusiveGateway' && <small className={styles.caption}>{data.name}</small>}
@@ -137,34 +179,86 @@ function makeNodes(): PNode[] {
       data: { kind: 'startEvent', name: '提交申请' },
     },
     {
-      id: 'task_manager',
+      id: 'task_apply',
       type: 'processNode',
       position: { x: 220, y: 208 },
-      data: { kind: 'userTask', name: '部门负责人审批', assignee: 'dept_manager' },
+      data: {
+        kind: 'userTask',
+        name: '填写申请',
+        assignee: '$' + '{initiator}',
+        formKey: 'leave-apply-form',
+        formFields: [
+          {
+            id: 'leaveDays',
+            label: '请假天数',
+            type: 'long',
+            defaultValue: '1',
+            constraints: [{ name: 'required' }, { name: 'minlength', config: '1' }],
+          },
+          {
+            id: 'leaveType',
+            label: '请假类型',
+            type: 'enum',
+            values: [
+              { id: 'annual', name: '年假' },
+              { id: 'sick', name: '病假' },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      id: 'task_manager',
+      type: 'processNode',
+      position: { x: 420, y: 208 },
+      data: {
+        kind: 'userTask',
+        name: '部门负责人审批',
+        assignee: 'dept_manager',
+        taskListeners: [
+          {
+            event: 'create',
+            type: 'expression',
+            value: '$' + '{taskListener.notify(task, eventName)}',
+          },
+        ],
+      },
     },
     {
       id: 'gateway_days',
       type: 'processNode',
-      position: { x: 445, y: 219 },
+      position: { x: 645, y: 219 },
       data: { kind: 'exclusiveGateway', name: '天数判断' },
     },
     {
       id: 'task_hr',
       type: 'processNode',
-      position: { x: 650, y: 92 },
-      data: { kind: 'userTask', name: '人事复核', assignee: 'hr' },
+      position: { x: 850, y: 92 },
+      data: {
+        kind: 'userTask',
+        name: '人事复核',
+        assignee: '$' + '{hrApprover}',
+        multiInstance: {
+          enable: true,
+          sequential: false,
+          collection: 'hrApprovers',
+          elementVariable: 'hrApprover',
+          completionCondition: '$' + '{nrOfCompletedInstances == nrOfInstances}',
+        },
+      },
     },
     {
       id: 'end_done',
       type: 'processNode',
-      position: { x: 900, y: 225 },
+      position: { x: 1100, y: 225 },
       data: { kind: 'endEvent', name: '审批完成' },
     },
   ]
 }
 function makeEdges(): PEdge[] {
   return [
-    { id: 'flow_1', source: 'start_apply', target: 'task_manager', type: 'smoothstep', data: {} },
+    { id: 'flow_1', source: 'start_apply', target: 'task_apply', type: 'smoothstep', data: {} },
+    { id: 'flow_1b', source: 'task_apply', target: 'task_manager', type: 'smoothstep', data: {} },
     { id: 'flow_2', source: 'task_manager', target: 'gateway_days', type: 'smoothstep', data: {} },
     {
       id: 'flow_3',
@@ -188,6 +282,53 @@ function makeEdges(): PEdge[] {
     style: { stroke: '#718e7d', strokeWidth: 2 },
     markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
   }))
+}
+function getSchemaIssues(dto: DTO) {
+  const issues: string[] = []
+  // XML NCName ids allow hyphens and dots; the schema example itself uses leave-approval.
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(dto.processId))
+    issues.push('流程标识需以字母或下划线开头，后续可包含字母、数字、下划线、连字符和点。')
+  const nodeIds = new Set<string>()
+  const allIds = new Set<string>()
+  for (const node of dto.nodes) {
+    if (!node.id.trim()) issues.push('存在缺少 ID 的节点。')
+    else if (allIds.has(node.id)) issues.push('节点或连线 ID 重复：' + node.id)
+    allIds.add(node.id)
+    nodeIds.add(node.id)
+    if (node.type === 'userTask') {
+      if (node.multiInstance?.enable && !node.multiInstance.collection?.trim())
+        issues.push(node.name + '：启用会签时必须填写处理人集合变量。')
+      const fieldIds = new Set<string>()
+      for (const field of node.formFields || []) {
+        if (!field.id.trim()) issues.push(node.name + '：表单字段 ID 不能为空。')
+        else if (fieldIds.has(field.id)) issues.push(node.name + '：表单字段 ID 重复：' + field.id)
+        fieldIds.add(field.id)
+        if (field.type === 'enum' && !field.values)
+          issues.push(node.name + '：枚举字段必须配置选项列表。')
+        if (
+          (field.constraints || []).some(
+            (constraint) =>
+              ['minlength', 'maxlength'].includes(constraint.name) && !constraint.config?.trim(),
+          )
+        )
+          issues.push(node.name + '：最小长度和最大长度约束必须填写配置值。')
+        if (field.type === 'enum' && field.values?.some((value) => !value.id.trim()))
+          issues.push(node.name + '：枚举选项 ID 不能为空。')
+      }
+      if (node.taskListeners?.some((listener) => !listener.value.trim()))
+        issues.push(node.name + '：任务监听器的实现值不能为空。')
+    }
+  }
+  if (!dto.nodes.some((node) => node.type === 'startEvent'))
+    issues.push('流程至少需要一个开始事件。')
+  for (const flow of dto.flows) {
+    if (!flow.id.trim()) issues.push('存在缺少 ID 的连线。')
+    else if (allIds.has(flow.id)) issues.push('节点或连线 ID 重复：' + flow.id)
+    allIds.add(flow.id)
+    if (!nodeIds.has(flow.source) || !nodeIds.has(flow.target))
+      issues.push('连线引用了不存在的节点：' + flow.id)
+  }
+  return issues
 }
 function makeId(prefix: string) {
   return prefix + '_' + Math.random().toString(36).slice(2, 7)
@@ -227,23 +368,30 @@ function Palette({
   )
 }
 function Fields({ processId, processName, setProcessId, setProcessName }: FieldsProps) {
+  const processIdValid = /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(processId)
   return (
     <div className={styles.fields}>
       <b className={styles.sectionLabel}>流程信息</b>
       <label>流程名称</label>
       <Input size="small" value={processName} onChange={(e) => setProcessName(e.target.value)} />
       <label>
-        流程标识 <small>仅字母、数字、下划线</small>
+        流程标识 <small>首位为字母或下划线</small>
       </label>
       <Input
         size="small"
         value={processId}
-        onChange={(e) => setProcessId(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+        status={processIdValid ? undefined : 'error'}
+        onChange={(e) => setProcessId(e.target.value)}
       />
+      {!processIdValid && (
+        <small className={styles.fieldError}>
+          首位需为字母或下划线，后续可用字母、数字、下划线、连字符和点。
+        </small>
+      )}
     </div>
   )
 }
-function Inspector({ node, edge, onNode, onEdge, onDelete }: InspectorProps) {
+function Inspector({ node, edge, onNode, onEdge, onDelete, onAdvanced }: InspectorProps) {
   if (!node && !edge)
     return (
       <div className={styles.empty}>
@@ -294,6 +442,27 @@ function Inspector({ node, edge, onNode, onEdge, onDelete }: InspectorProps) {
             onChange={(e) => onNode('assignee', e.target.value)}
           />
           <p>填写 Camunda assignee 用户 ID 或表达式。</p>
+          <label>表单 Key</label>
+          <Input
+            size="small"
+            value={node.data.formKey || ''}
+            placeholder="例如：leave-approval-form"
+            onChange={(e) => onNode('formKey', e.target.value)}
+          />
+          <div className={styles.taskOptions}>
+            <span>
+              {node.data.multiInstance?.enable ? '已配置会签' : '未配置会签'}
+              {node.data.formFields?.length
+                ? ' · ' + node.data.formFields.length + ' 个表单字段'
+                : ''}
+              {node.data.taskListeners?.length
+                ? ' · ' + node.data.taskListeners.length + ' 个监听器'
+                : ''}
+            </span>
+            <Button size="small" onClick={onAdvanced}>
+              高级配置
+            </Button>
+          </div>
         </>
       )}
       <Button danger type="text" icon={<DeleteOutlined />} onClick={onDelete}>
@@ -302,23 +471,367 @@ function Inspector({ node, edge, onNode, onEdge, onDelete }: InspectorProps) {
     </div>
   )
 }
+function AdvancedTaskConfig({
+  node,
+  close,
+  onChange,
+}: {
+  node: PNode
+  close: () => void
+  onChange: (data: Data) => void
+}) {
+  const data = node.data
+  const multi = data.multiInstance ?? { enable: false, sequential: false }
+  const fields = data.formFields ?? []
+  const listeners = data.taskListeners ?? []
+  const update = (patch: Partial<Data>) => onChange({ ...data, ...patch })
+  const updateField = (index: number, patch: Partial<FormField>) =>
+    update({ formFields: fields.map((field, i) => (i === index ? { ...field, ...patch } : field)) })
+  const updateListener = (index: number, patch: Partial<TaskListener>) =>
+    update({
+      taskListeners: listeners.map((listener, i) =>
+        i === index ? { ...listener, ...patch } : listener,
+      ),
+    })
+  const fieldTab = (
+    <div className={styles.advancedPanel}>
+      <div className={styles.advancedIntro}>
+        <span>定义用户任务提交或审批时使用的 Camunda 内置表单字段。</span>
+        <Button
+          size="small"
+          icon={<PlusOutlined />}
+          onClick={() =>
+            update({
+              formFields: [...fields, { id: makeId('field'), label: '新字段', type: 'string' }],
+            })
+          }
+        >
+          添加字段
+        </Button>
+      </div>
+      {fields.length === 0 ? (
+        <div className={styles.advancedEmpty}>还没有表单字段，可以先添加一个审批表单项。</div>
+      ) : (
+        <div className={styles.fieldList}>
+          {fields.map((field, index) => (
+            <div className={styles.fieldCard} key={field.id + index}>
+              <div className={styles.fieldCardHead}>
+                <b>字段 {index + 1}</b>
+                <Button
+                  danger
+                  type="text"
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  aria-label="删除表单字段"
+                  onClick={() => update({ formFields: fields.filter((_, i) => i !== index) })}
+                />
+              </div>
+              <div className={styles.fieldGrid}>
+                <label>字段 ID</label>
+                <Input
+                  size="small"
+                  value={field.id}
+                  onChange={(e) => updateField(index, { id: e.target.value })}
+                />
+                <label>显示名称</label>
+                <Input
+                  size="small"
+                  value={field.label || ''}
+                  onChange={(e) => updateField(index, { label: e.target.value })}
+                />
+                <label>字段类型</label>
+                <Select
+                  size="small"
+                  value={field.type}
+                  options={fieldTypes}
+                  onChange={(type: FormFieldType) =>
+                    updateField(index, {
+                      type,
+                      values: type === 'enum' ? (field.values ?? []) : undefined,
+                      datePattern:
+                        type === 'date' ? (field.datePattern ?? 'yyyy-MM-dd') : undefined,
+                    })
+                  }
+                />
+                <label>默认值</label>
+                <Input
+                  size="small"
+                  value={field.defaultValue || ''}
+                  onChange={(e) => updateField(index, { defaultValue: e.target.value })}
+                />
+                {field.type === 'date' && (
+                  <>
+                    <label>日期格式</label>
+                    <Input
+                      size="small"
+                      value={field.datePattern || ''}
+                      placeholder="yyyy-MM-dd"
+                      onChange={(e) => updateField(index, { datePattern: e.target.value })}
+                    />
+                  </>
+                )}
+                {field.type === 'enum' && (
+                  <>
+                    <label>枚举选项</label>
+                    <Input.TextArea
+                      rows={2}
+                      value={(field.values || [])
+                        .map((value) => value.id + (value.name ? '=' + value.name : ''))
+                        .join('\n')}
+                      placeholder={'annual=年假\nsick=病假'}
+                      onChange={(e) =>
+                        updateField(index, {
+                          values: e.target.value
+                            .split('\n')
+                            .filter(Boolean)
+                            .map((line) => {
+                              const [id, ...label] = line.split('=')
+                              return {
+                                id: id.trim(),
+                                ...(label.length ? { name: label.join('=').trim() } : {}),
+                              }
+                            }),
+                        })
+                      }
+                    />
+                  </>
+                )}
+                <label>校验约束</label>
+                <Select
+                  mode="multiple"
+                  size="small"
+                  value={(field.constraints || []).map((constraint) => constraint.name)}
+                  options={fieldConstraints.map(({ value, label }) => ({ value, label }))}
+                  onChange={(values: FormFieldConstraint['name'][]) =>
+                    updateField(index, {
+                      constraints: values.map((name) => ({
+                        name,
+                        ...(['minlength', 'maxlength'].includes(name)
+                          ? {
+                              config:
+                                field.constraints?.find((item) => item.name === name)?.config ||
+                                '1',
+                            }
+                          : {}),
+                      })),
+                    })
+                  }
+                />
+              </div>
+              {(field.constraints || []).some(
+                (constraint) => constraint.name === 'minlength' || constraint.name === 'maxlength',
+              ) && (
+                <div className={styles.constraintList}>
+                  {(field.constraints || [])
+                    .filter(
+                      (constraint) =>
+                        constraint.name === 'minlength' || constraint.name === 'maxlength',
+                    )
+                    .map((constraint) => (
+                      <label key={constraint.name}>
+                        {constraint.name === 'minlength' ? '最小长度' : '最大长度'}
+                        <Input
+                          size="small"
+                          value={constraint.config || ''}
+                          onChange={(e) =>
+                            updateField(index, {
+                              constraints: (field.constraints || []).map((item) =>
+                                item.name === constraint.name
+                                  ? { ...item, config: e.target.value }
+                                  : item,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+  const multiTab = (
+    <div className={styles.advancedPanel}>
+      <div className={styles.switchRow}>
+        <span>
+          <b>启用会签</b>
+          <small>把处理人集合拆成多个审批实例</small>
+        </span>
+        <Switch
+          checked={multi.enable}
+          onChange={(enable) => update({ multiInstance: { ...multi, enable } })}
+        />
+      </div>
+      {multi.enable ? (
+        <div className={styles.multiGrid}>
+          <label>审批方式</label>
+          <Select
+            value={multi.sequential ? 'sequential' : 'parallel'}
+            options={[
+              { value: 'parallel', label: '并行会签' },
+              { value: 'sequential', label: '串行会签' },
+            ]}
+            onChange={(value: 'parallel' | 'sequential') =>
+              update({ multiInstance: { ...multi, sequential: value === 'sequential' } })
+            }
+          />
+          <label>
+            处理人集合变量 <i>必填</i>
+          </label>
+          <Input
+            value={multi.collection || ''}
+            placeholder="例如：approvers"
+            onChange={(e) => update({ multiInstance: { ...multi, collection: e.target.value } })}
+          />
+          <label>当前处理人变量</label>
+          <Input
+            value={multi.elementVariable || ''}
+            placeholder="例如：approver"
+            onChange={(e) =>
+              update({ multiInstance: { ...multi, elementVariable: e.target.value } })
+            }
+          />
+          <label>提前结束条件</label>
+          <Input.TextArea
+            rows={2}
+            value={multi.completionCondition || ''}
+            placeholder={'例如：$' + '{nrOfCompletedInstances == nrOfInstances}'}
+            onChange={(e) =>
+              update({ multiInstance: { ...multi, completionCondition: e.target.value } })
+            }
+          />
+          <small>留空时等待所有实例完成；表达式按 Camunda EL 传给后端。</small>
+        </div>
+      ) : (
+        <div className={styles.advancedEmpty}>开启后可配置串行或并行会签，以及会签完成条件。</div>
+      )}
+    </div>
+  )
+  const listenerTab = (
+    <div className={styles.advancedPanel}>
+      <div className={styles.advancedIntro}>
+        <span>在任务创建、指派、完成或删除时调用后端监听器。</span>
+        <Button
+          size="small"
+          icon={<PlusOutlined />}
+          onClick={() =>
+            update({
+              taskListeners: [...listeners, { event: 'create', type: 'expression', value: '' }],
+            })
+          }
+        >
+          添加监听器
+        </Button>
+      </div>
+      {listeners.length === 0 ? (
+        <div className={styles.advancedEmpty}>当前任务没有监听器。</div>
+      ) : (
+        <div className={styles.listenerList}>
+          {listeners.map((listener, index) => (
+            <div className={styles.listenerRow} key={index}>
+              <Select
+                size="small"
+                value={listener.event}
+                options={listenerEvents.map(({ value, label }) => ({ value, label }))}
+                onChange={(event: TaskListener['event']) => updateListener(index, { event })}
+              />
+              <Select
+                size="small"
+                value={listener.type}
+                options={listenerTypes.map(({ value, label }) => ({ value, label }))}
+                onChange={(type: TaskListener['type']) => updateListener(index, { type })}
+              />
+              <Input
+                size="small"
+                value={listener.value}
+                placeholder={
+                  listener.type === 'class' ? '监听器全类名' : '根据实现类型填写表达式或 Bean'
+                }
+                status={listener.value.trim() ? undefined : 'error'}
+                onChange={(e) => updateListener(index, { value: e.target.value })}
+              />
+              <Button
+                danger
+                type="text"
+                size="small"
+                icon={<DeleteOutlined />}
+                aria-label="删除任务监听器"
+                onClick={() => update({ taskListeners: listeners.filter((_, i) => i !== index) })}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+  return (
+    <Modal
+      open
+      title={
+        <span>
+          用户任务配置 <small className={styles.modalSubtitle}>{data.name}</small>
+        </span>
+      }
+      width={760}
+      onCancel={close}
+      onOk={close}
+      okText="完成"
+      cancelButtonProps={{ style: { display: 'none' } }}
+      destroyOnClose
+    >
+      <Tabs
+        items={[
+          {
+            key: 'form',
+            label: '表单字段' + (fields.length ? ' · ' + fields.length : ''),
+            children: fieldTab,
+          },
+          { key: 'multi', label: '会签' + (multi.enable ? ' · 已启用' : ''), children: multiTab },
+          {
+            key: 'listeners',
+            label: '任务监听器' + (listeners.length ? ' · ' + listeners.length : ''),
+            children: listenerTab,
+          },
+        ]}
+      />
+    </Modal>
+  )
+}
 function Header({
   name,
   count,
   edges,
   open,
+  convert,
+  deploy,
+  publication,
+  publishedCurrent,
 }: {
   name: string
   count: number
   edges: number
   open: () => void
+  convert: () => void
+  deploy: () => void
+  publication?: TaskTemplate
+  publishedCurrent: boolean
 }) {
   return (
     <header className={styles.header}>
       <div>
         <div className={styles.eyebrow}>流程工作台 / 新建流程</div>
         <h1>
-          {name} <Tag>未发布</Tag>{' '}
+          {name}{' '}
+          <Tag>
+            {publishedCurrent
+              ? '已部署 · v' + publication?.version
+              : publication
+                ? '有未部署修改'
+                : '未发布'}
+          </Tag>{' '}
           <small>
             <i /> 本地草稿
           </small>
@@ -331,6 +844,12 @@ function Header({
         </span>
         <Button icon={<CodeOutlined />} onClick={open}>
           生成请求 JSON
+        </Button>
+        <Button icon={<CodeOutlined />} onClick={convert}>
+          转为 XML
+        </Button>
+        <Button type="primary" icon={<CloudUploadOutlined />} onClick={deploy}>
+          部署任务模板
         </Button>
       </div>
     </header>
@@ -573,50 +1092,6 @@ function Structure({ s }: { s: Shared }) {
     </div>
   )
 }
-function Drawer({ dto, close }: { dto: DTO; close: () => void }) {
-  const [copied, setCopied] = useState(false)
-  const json = JSON.stringify(dto, null, 2)
-  const copy = async () => {
-    await navigator.clipboard?.writeText(json)
-    setCopied(true)
-    message.success('请求 JSON 已复制')
-  }
-  return (
-    <div
-      className={styles.backdrop}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close()
-      }}
-    >
-      <section className={styles.drawer}>
-        <header>
-          <div>
-            <CodeOutlined />
-            <span>
-              <b>后端请求 JSON</b>
-              <small>POST /api/v1/bpmn/json2xml · 暂未连接接口</small>
-            </span>
-          </div>
-          <button onClick={close}>
-            <CloseOutlined />
-          </button>
-        </header>
-        <p>
-          <CheckOutlined /> 已整理为 ProcessDefinitionDTO 结构
-        </p>
-        <pre>{json}</pre>
-        <footer>
-          <span>
-            {dto.nodes.length} nodes · {dto.flows.length} flows
-          </span>
-          <Button type="primary" icon={<CopyOutlined />} onClick={copy}>
-            {copied ? '已复制' : '复制 JSON'}
-          </Button>
-        </footer>
-      </section>
-    </div>
-  )
-}
 export function DesignerPage() {
   const [params, setParams] = useSearchParams()
   const asked = params.get('variant') as Variant | null
@@ -629,9 +1104,12 @@ export function DesignerPage() {
   const [targetId, setTargetId] = useState('')
   const [nodeId, setNodeId] = useState<string | null>(null)
   const [edgeId, setEdgeId] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
+  const [advancedNodeId, setAdvancedNodeId] = useState<string | null>(null)
+  const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null)
+  const [publication, setPublication] = useState<{ template: TaskTemplate; definition: string }>()
   const node = nodes.find((n) => n.id === nodeId)
   const edge = edges.find((e) => e.id === edgeId)
+  const advancedNode = nodes.find((n) => n.id === advancedNodeId)
   const setVariant = useCallback(
     (v: Variant) =>
       setParams(
@@ -719,11 +1197,16 @@ export function DesignerPage() {
       ),
     [setEdges],
   )
-  const updateNode = (key: 'name' | 'assignee', value: string) => {
+  const updateNode = (key: 'name' | 'assignee' | 'formKey', value: string) => {
     if (nodeId)
       setNodes((cur) =>
-        cur.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, [key]: value } } : n)),
+        cur.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, [key]: value || undefined } } : n,
+        ),
       )
+  }
+  const updateNodeData = (id: string, data: Data) => {
+    setNodes((cur) => cur.map((n) => (n.id === id ? { ...n, data } : n)))
   }
   const updateEdge = (value: string) => {
     if (edgeId)
@@ -761,6 +1244,57 @@ export function DesignerPage() {
         x: Math.round(n.position.x),
         y: Math.round(n.position.y),
         ...(n.data.kind === 'userTask' && n.data.assignee ? { assignee: n.data.assignee } : {}),
+        ...(n.data.kind === 'userTask' && n.data.formKey ? { formKey: n.data.formKey } : {}),
+        ...(n.data.kind === 'userTask' && n.data.multiInstance?.enable
+          ? {
+              multiInstance: {
+                enable: true,
+                ...(n.data.multiInstance.sequential !== undefined
+                  ? { sequential: n.data.multiInstance.sequential }
+                  : {}),
+                ...(n.data.multiInstance.collection
+                  ? { collection: n.data.multiInstance.collection }
+                  : {}),
+                ...(n.data.multiInstance.elementVariable
+                  ? { elementVariable: n.data.multiInstance.elementVariable }
+                  : {}),
+                ...(n.data.multiInstance.completionCondition
+                  ? { completionCondition: n.data.multiInstance.completionCondition }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(n.data.kind === 'userTask' && n.data.taskListeners?.length
+          ? {
+              taskListeners: n.data.taskListeners.map(({ event, type, value }) => ({
+                event,
+                type,
+                value,
+              })),
+            }
+          : {}),
+        ...(n.data.kind === 'userTask' && n.data.formFields?.length
+          ? {
+              formFields: n.data.formFields.map((field) => ({
+                id: field.id,
+                ...(field.label ? { label: field.label } : {}),
+                type: field.type,
+                ...(field.defaultValue ? { defaultValue: field.defaultValue } : {}),
+                ...(field.type === 'date' && field.datePattern
+                  ? { datePattern: field.datePattern }
+                  : {}),
+                ...(field.type === 'enum' ? { values: field.values || [] } : {}),
+                ...(field.constraints?.length
+                  ? {
+                      constraints: field.constraints.map((constraint) => ({
+                        name: constraint.name,
+                        ...(constraint.config ? { config: constraint.config } : {}),
+                      })),
+                    }
+                  : {}),
+              })),
+            }
+          : {}),
       })),
       flows: edges.map((e) => ({
         id: e.id,
@@ -778,6 +1312,9 @@ export function DesignerPage() {
     onNode: updateNode,
     onEdge: updateEdge,
     onDelete: remove,
+    onAdvanced: () => {
+      if (node?.data.kind === 'userTask') setAdvancedNodeId(node.id)
+    },
   }
   const shared: Shared = {
     nodes,
@@ -801,7 +1338,7 @@ export function DesignerPage() {
     connect,
     fields,
     inspector,
-    open: () => setOpen(true),
+    open: () => setExportFormat('json'),
     processId,
     processName,
     sourceId,
@@ -831,7 +1368,11 @@ export function DesignerPage() {
         name={processName}
         count={nodes.length}
         edges={edges.length}
-        open={() => setOpen(true)}
+        open={() => setExportFormat('json')}
+        convert={() => setExportFormat('xml')}
+        deploy={() => setExportFormat('deploy')}
+        publication={publication?.template}
+        publishedCurrent={publication?.definition === JSON.stringify(dto)}
       />
       {variant === 'canvas' && <Canvas s={shared} />}
       {variant === 'steps' && <Steps s={shared} />}
@@ -860,7 +1401,24 @@ export function DesignerPage() {
           </button>
         </div>
       )}
-      {open && <Drawer dto={dto} close={() => setOpen(false)} />}
+      {exportFormat && (
+        <ProcessExportDrawer
+          definition={dto}
+          initialFormat={exportFormat}
+          issues={getSchemaIssues(dto)}
+          close={() => setExportFormat(null)}
+          onPublished={(template, definition) =>
+            setPublication({ template, definition: JSON.stringify(definition) })
+          }
+        />
+      )}
+      {advancedNode?.data.kind === 'userTask' && (
+        <AdvancedTaskConfig
+          node={advancedNode}
+          close={() => setAdvancedNodeId(null)}
+          onChange={(data) => updateNodeData(advancedNode.id, data)}
+        />
+      )}
     </section>
   )
 }
