@@ -1,1424 +1,1083 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { DragEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useMemo, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
   Controls,
   Handle,
   MarkerType,
-  MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
-  addEdge,
-  useReactFlow,
-  useEdgesState,
-  useNodesState,
   type Connection,
   type Edge,
-  type EdgeChange,
   type Node,
-  type NodeChange,
+  type NodeProps,
 } from '@xyflow/react'
 import {
   ApartmentOutlined,
-  ArrowLeftOutlined,
-  ArrowRightOutlined,
   CheckCircleFilled,
-  CloudUploadOutlined,
   CodeOutlined,
+  CopyOutlined,
   DeleteOutlined,
+  DownloadOutlined,
+  EyeOutlined,
   PlusOutlined,
-  ShareAltOutlined,
 } from '@ant-design/icons'
-import { Button, Input, Modal, Select, Switch, Tabs, Tag } from 'antd'
-import type {
-  BpmnFormField as FormField,
-  BpmnFormFieldConstraint as FormFieldConstraint,
-  BpmnFormFieldType as FormFieldType,
-  BpmnJSONRequest as DTO,
-  BpmnMultiInstance as MultiInstance,
-  BpmnNodeType as Kind,
-  BpmnTaskListener as TaskListener,
-} from '@/api/bpmn'
-import type { TaskTemplate } from '@/api/workflow'
-import { ProcessExportDrawer, type ExportFormat } from './ProcessExportDrawer'
+import {
+  Alert,
+  Button,
+  Checkbox,
+  DatePicker,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Tag,
+  message,
+} from 'antd'
+import { copyText } from '@/utils/clipboard'
+import {
+  createInitialApprovalModel,
+  createModelId,
+  fieldTypeLabels,
+  methodLabels,
+  nodeTypeLabels,
+  operatorLabels,
+  validateApprovalModel,
+  type ApprovalConditionRule,
+  type ApprovalEdge,
+  type ApprovalFieldOption,
+  type ApprovalFormField,
+  type ApprovalMethod,
+  type ApprovalModel,
+  type ApprovalNode,
+  type ApprovalNodeType,
+  type ApprovalOperator,
+} from './approvalModel'
 import styles from './DesignerPage.module.less'
 import '@xyflow/react/dist/style.css'
 
-type Data = {
-  kind: Kind
-  name: string
-  assignee?: string
-  formKey?: string
-  multiInstance?: MultiInstance
-  taskListeners?: TaskListener[]
-  formFields?: FormField[]
+type PositionMap = Record<string, { x: number; y: number }>
+type ViewData = { kind: ApprovalNodeType; label: string; meta: string }
+type ViewNode = Node<ViewData, 'approvalNode'>
+type ViewEdge = Edge<{ label?: string; isDefault?: boolean }>
+const initialPositions: PositionMap = {
+  start_1: { x: 20, y: 220 },
+  approve_1: { x: 190, y: 205 },
+  branch_1: { x: 410, y: 215 },
+  approve_2: { x: 630, y: 75 },
+  cc_1: { x: 850, y: 215 },
+  end_1: { x: 1050, y: 215 },
 }
-type FlowData = { conditionExpression?: string }
-type PNode = Node<Data, 'processNode'>
-type PEdge = Edge<FlowData>
-type Variant = 'canvas' | 'steps' | 'structure'
-type FieldsProps = {
-  processId: string
-  processName: string
-  setProcessId: (v: string) => void
-  setProcessName: (v: string) => void
+const nodeOrder: ApprovalNodeType[] = ['start', 'approval', 'condition', 'cc', 'end']
+const operatorOptions = Object.entries(operatorLabels).map(([value, label]) => ({ value, label }))
+
+function describeEdge(model: ApprovalModel, edge: ApprovalEdge): string {
+  if (edge.isDefault) return '默认情况'
+  return (edge.conditions || [])
+    .map((rule) => {
+      const field = model.form.fields.find((item) => item.id === rule.field)
+      const value =
+        field?.type === 'enum'
+          ? field.options?.find((option) => option.value === String(rule.value))?.label ||
+            rule.value
+          : rule.value
+      return (field?.label || rule.field) + ' ' + operatorLabels[rule.operator] + ' ' + value
+    })
+    .join(' 且 ')
 }
-type InspectorProps = {
-  node?: PNode
-  edge?: PEdge
-  onNode: (key: 'name' | 'assignee' | 'formKey', value: string) => void
-  onEdge: (value: string) => void
-  onDelete: () => void
-  onAdvanced: () => void
-}
-type Shared = {
-  nodes: PNode[]
-  edges: PEdge[]
-  onNodesChange: (c: NodeChange<PNode>[]) => void
-  onEdgesChange: (c: EdgeChange<PEdge>[]) => void
-  onConnect: (c: Connection) => void
-  selectNode: (e: unknown, n: PNode) => void
-  selectEdge: (e: unknown, f: PEdge) => void
-  clear: () => void
-  add: (kind: Kind, position?: { x: number; y: number }) => void
-  connect: (s?: string, t?: string) => void
-  fields: FieldsProps
-  inspector: InspectorProps
-  open: () => void
-  processId: string
-  processName: string
-  sourceId: string
-  targetId: string
-  setSourceId: (id: string) => void
-  setTargetId: (id: string) => void
-}
-const kinds: Array<{ kind: Kind; label: string }> = [
-  { kind: 'startEvent', label: '开始事件' },
-  { kind: 'userTask', label: '用户任务' },
-  { kind: 'exclusiveGateway', label: '排他网关' },
-  { kind: 'endEvent', label: '结束事件' },
-]
-const names: Record<Kind, string> = {
-  startEvent: '开始事件',
-  userTask: '用户任务',
-  exclusiveGateway: '排他网关',
-  endEvent: '结束事件',
-}
-const variants: Array<{ id: Variant; label: string }> = [
-  { id: 'canvas', label: '画布编辑' },
-  { id: 'steps', label: '步骤编排' },
-  { id: 'structure', label: '结构清单' },
-]
-const nodeTypes = { processNode: FlowNode }
-const fieldTypes: Array<{ value: FormFieldType; label: string }> = [
-  { value: 'string', label: '文本' },
-  { value: 'long', label: '整数' },
-  { value: 'boolean', label: '布尔值' },
-  { value: 'date', label: '日期' },
-  { value: 'enum', label: '枚举' },
-]
-const listenerEvents = [
-  { value: 'create', label: '创建' },
-  { value: 'assignment', label: '指派' },
-  { value: 'complete', label: '完成' },
-  { value: 'delete', label: '删除' },
-] as const
-const listenerTypes = [
-  { value: 'class', label: 'Java 类' },
-  { value: 'expression', label: '表达式' },
-  { value: 'delegateExpression', label: '委托 Bean' },
-] as const
-const fieldConstraints = [
-  { value: 'required', label: '必填' },
-  { value: 'readonly', label: '只读' },
-  { value: 'minlength', label: '最小长度' },
-  { value: 'maxlength', label: '最大长度' },
-] as const
-function FlowNode({ data, selected }: { data: Data; selected: boolean }) {
+
+function FlowNodeView({ data }: NodeProps<ViewNode>) {
+  const icon =
+    data.kind === 'start'
+      ? '始'
+      : data.kind === 'end'
+        ? '终'
+        : data.kind === 'condition'
+          ? '◇'
+          : data.kind === 'cc'
+            ? '知'
+            : '审'
   return (
-    <div className={`${styles.nodeWrap} ${styles['node' + data.kind]}`}>
-      {data.kind !== 'startEvent' && (
+    <div className={styles.flowNode + ' ' + styles['kind' + data.kind]}>
+      {data.kind !== 'start' && (
         <Handle type="target" position={Position.Left} className={styles.handle} />
       )}
-      {data.kind === 'exclusiveGateway' ? (
-        <div className={styles.gateway}>◇</div>
-      ) : data.kind === 'startEvent' || data.kind === 'endEvent' ? (
-        <div className={styles.event + (data.kind === 'endEvent' ? ' ' + styles.eventEnd : '')}>
-          {data.kind === 'startEvent' ? '▶' : '■'}
-          <small>{data.name}</small>
-        </div>
-      ) : (
-        <div className={styles.task + (selected ? ' ' + styles.selected : '')}>
-          <i>✓</i>
-          {data.name}
-          {data.multiInstance?.enable || data.formFields?.length || data.taskListeners?.length ? (
-            <small className={styles.nodeBadge}>
-              {data.multiInstance?.enable ? '会签' : ''}
-              {data.formFields?.length ? '表单' : ''}
-              {data.taskListeners?.length ? '监听' : ''}
-            </small>
-          ) : null}
-        </div>
-      )}
-      {data.kind === 'exclusiveGateway' && <small className={styles.caption}>{data.name}</small>}
-      {data.kind !== 'endEvent' && (
+      <div className={styles.nodeIcon}>{icon}</div>
+      <div className={styles.nodeText}>
+        <b>{data.label}</b>
+        {data.meta && <small>{data.meta}</small>}
+      </div>
+      {data.kind !== 'end' && (
         <Handle type="source" position={Position.Right} className={styles.handle} />
       )}
     </div>
   )
 }
-function makeNodes(): PNode[] {
-  return [
-    {
-      id: 'start_apply',
-      type: 'processNode',
-      position: { x: 60, y: 225 },
-      data: { kind: 'startEvent', name: '提交申请' },
-    },
-    {
-      id: 'task_apply',
-      type: 'processNode',
-      position: { x: 220, y: 208 },
-      data: {
-        kind: 'userTask',
-        name: '填写申请',
-        assignee: '$' + '{initiator}',
-        formKey: 'leave-apply-form',
-        formFields: [
-          {
-            id: 'leaveDays',
-            label: '请假天数',
-            type: 'long',
-            defaultValue: '1',
-            constraints: [{ name: 'required' }, { name: 'minlength', config: '1' }],
-          },
-          {
-            id: 'leaveType',
-            label: '请假类型',
-            type: 'enum',
-            values: [
-              { id: 'annual', name: '年假' },
-              { id: 'sick', name: '病假' },
-            ],
-          },
-        ],
-      },
-    },
-    {
-      id: 'task_manager',
-      type: 'processNode',
-      position: { x: 420, y: 208 },
-      data: {
-        kind: 'userTask',
-        name: '部门负责人审批',
-        assignee: 'dept_manager',
-        taskListeners: [
-          {
-            event: 'create',
-            type: 'expression',
-            value: '$' + '{taskListener.notify(task, eventName)}',
-          },
-        ],
-      },
-    },
-    {
-      id: 'gateway_days',
-      type: 'processNode',
-      position: { x: 645, y: 219 },
-      data: { kind: 'exclusiveGateway', name: '天数判断' },
-    },
-    {
-      id: 'task_hr',
-      type: 'processNode',
-      position: { x: 850, y: 92 },
-      data: {
-        kind: 'userTask',
-        name: '人事复核',
-        assignee: '$' + '{hrApprover}',
-        multiInstance: {
-          enable: true,
-          sequential: false,
-          collection: 'hrApprovers',
-          elementVariable: 'hrApprover',
-          completionCondition: '$' + '{nrOfCompletedInstances == nrOfInstances}',
-        },
-      },
-    },
-    {
-      id: 'end_done',
-      type: 'processNode',
-      position: { x: 1100, y: 225 },
-      data: { kind: 'endEvent', name: '审批完成' },
-    },
-  ]
-}
-function makeEdges(): PEdge[] {
-  return [
-    { id: 'flow_1', source: 'start_apply', target: 'task_apply', type: 'smoothstep', data: {} },
-    { id: 'flow_1b', source: 'task_apply', target: 'task_manager', type: 'smoothstep', data: {} },
-    { id: 'flow_2', source: 'task_manager', target: 'gateway_days', type: 'smoothstep', data: {} },
-    {
-      id: 'flow_3',
-      source: 'gateway_days',
-      target: 'task_hr',
-      type: 'smoothstep',
-      label: '${leaveDays > 3}',
-      data: { conditionExpression: '${leaveDays > 3}' },
-    },
-    {
-      id: 'flow_4',
-      source: 'gateway_days',
-      target: 'end_done',
-      type: 'smoothstep',
-      label: '${leaveDays <= 3}',
-      data: { conditionExpression: '${leaveDays <= 3}' },
-    },
-    { id: 'flow_5', source: 'task_hr', target: 'end_done', type: 'smoothstep', data: {} },
-  ].map((edge) => ({
-    ...edge,
-    style: { stroke: '#718e7d', strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
-  }))
-}
-function getSchemaIssues(dto: DTO) {
-  const issues: string[] = []
-  // XML NCName ids allow hyphens and dots; the schema example itself uses leave-approval.
-  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(dto.processId))
-    issues.push('流程标识需以字母或下划线开头，后续可包含字母、数字、下划线、连字符和点。')
-  const nodeIds = new Set<string>()
-  const allIds = new Set<string>()
-  for (const node of dto.nodes) {
-    if (!node.id.trim()) issues.push('存在缺少 ID 的节点。')
-    else if (allIds.has(node.id)) issues.push('节点或连线 ID 重复：' + node.id)
-    allIds.add(node.id)
-    nodeIds.add(node.id)
-    if (node.type === 'userTask') {
-      if (node.multiInstance?.enable && !node.multiInstance.collection?.trim())
-        issues.push(node.name + '：启用会签时必须填写处理人集合变量。')
-      const fieldIds = new Set<string>()
-      for (const field of node.formFields || []) {
-        if (!field.id.trim()) issues.push(node.name + '：表单字段 ID 不能为空。')
-        else if (fieldIds.has(field.id)) issues.push(node.name + '：表单字段 ID 重复：' + field.id)
-        fieldIds.add(field.id)
-        if (field.type === 'enum' && !field.values)
-          issues.push(node.name + '：枚举字段必须配置选项列表。')
-        if (
-          (field.constraints || []).some(
-            (constraint) =>
-              ['minlength', 'maxlength'].includes(constraint.name) && !constraint.config?.trim(),
-          )
-        )
-          issues.push(node.name + '：最小长度和最大长度约束必须填写配置值。')
-        if (field.type === 'enum' && field.values?.some((value) => !value.id.trim()))
-          issues.push(node.name + '：枚举选项 ID 不能为空。')
-      }
-      if (node.taskListeners?.some((listener) => !listener.value.trim()))
-        issues.push(node.name + '：任务监听器的实现值不能为空。')
-    }
-  }
-  if (!dto.nodes.some((node) => node.type === 'startEvent'))
-    issues.push('流程至少需要一个开始事件。')
-  for (const flow of dto.flows) {
-    if (!flow.id.trim()) issues.push('存在缺少 ID 的连线。')
-    else if (allIds.has(flow.id)) issues.push('节点或连线 ID 重复：' + flow.id)
-    allIds.add(flow.id)
-    if (!nodeIds.has(flow.source) || !nodeIds.has(flow.target))
-      issues.push('连线引用了不存在的节点：' + flow.id)
-  }
-  return issues
-}
-function makeId(prefix: string) {
-  return prefix + '_' + Math.random().toString(36).slice(2, 7)
-}
-function Palette({
-  add,
-  compact = false,
-  draggable = false,
+const nodeTypes = { approvalNode: FlowNodeView }
+
+function ModelCanvas({
+  model,
+  positions,
+  onPosition,
+  onConnect,
+  onSelectNode,
+  onSelectEdge,
 }: {
-  add: Shared['add']
-  compact?: boolean
-  draggable?: boolean
+  model: ApprovalModel
+  positions: PositionMap
+  onPosition: (id: string, position: { x: number; y: number }) => void
+  onConnect: (connection: Connection) => void
+  onSelectNode: (id: string) => void
+  onSelectEdge: (id: string) => void
 }) {
-  return (
-    <div className={styles.palette + (compact ? ' ' + styles.compact : '')}>
-      {!compact && (
-        <div className={styles.sectionLabel}>
-          添加节点 <small>4 种基础节点</small>
-        </div>
-      )}
-      {kinds.map((k, i) => (
-        <button
-          key={k.kind}
-          draggable={draggable}
-          onDragStart={(event) => {
-            event.dataTransfer.setData('application/x-process-node', k.kind)
-            event.dataTransfer.effectAllowed = 'move'
-          }}
-          onClick={() => add(k.kind)}
-        >
-          <i className={styles['p' + i]}>{['开', '审', '判', '终'][i]}</i>
-          {k.label}
-          <PlusOutlined />
-        </button>
-      ))}
-    </div>
-  )
-}
-function Fields({ processId, processName, setProcessId, setProcessName }: FieldsProps) {
-  const processIdValid = /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(processId)
-  return (
-    <div className={styles.fields}>
-      <b className={styles.sectionLabel}>流程信息</b>
-      <label>流程名称</label>
-      <Input size="small" value={processName} onChange={(e) => setProcessName(e.target.value)} />
-      <label>
-        流程标识 <small>首位为字母或下划线</small>
-      </label>
-      <Input
-        size="small"
-        value={processId}
-        status={processIdValid ? undefined : 'error'}
-        onChange={(e) => setProcessId(e.target.value)}
-      />
-      {!processIdValid && (
-        <small className={styles.fieldError}>
-          首位需为字母或下划线，后续可用字母、数字、下划线、连字符和点。
-        </small>
-      )}
-    </div>
-  )
-}
-function Inspector({ node, edge, onNode, onEdge, onDelete, onAdvanced }: InspectorProps) {
-  if (!node && !edge)
-    return (
-      <div className={styles.empty}>
-        <ApartmentOutlined />
-        <b>选择节点或连线</b>
-        <span>在这里编辑流程属性</span>
-      </div>
-    )
-  if (edge)
-    return (
-      <div className={styles.inspector}>
-        <b>
-          <ShareAltOutlined /> 流程连线
-        </b>
-        <small>
-          {edge.source} → {edge.target}
-        </small>
-        <label>分支条件 · EL 表达式</label>
-        <Input.TextArea
-          rows={3}
-          value={edge.data?.conditionExpression || ''}
-          placeholder="例如：${leaveDays > 3}"
-          onChange={(e) => onEdge(e.target.value)}
-        />
-        <p>排他网关出边可以配置分支条件。留空表示默认分支。</p>
-        <Button danger type="text" icon={<DeleteOutlined />} onClick={onDelete}>
-          删除连线
-        </Button>
-      </div>
-    )
-  if (!node) return null
-  return (
-    <div className={styles.inspector}>
-      <b>
-        <i className={styles.nodeType}>{names[node.data.kind]}</i>
-        {names[node.data.kind]}
-      </b>
-      <small>{node.id}</small>
-      <label>节点名称</label>
-      <Input size="small" value={node.data.name} onChange={(e) => onNode('name', e.target.value)} />
-      {node.data.kind === 'userTask' && (
-        <>
-          <label>处理人标识</label>
-          <Input
-            size="small"
-            value={node.data.assignee || ''}
-            placeholder="例如：dept_manager"
-            onChange={(e) => onNode('assignee', e.target.value)}
-          />
-          <p>填写 Camunda assignee 用户 ID 或表达式。</p>
-          <label>表单 Key</label>
-          <Input
-            size="small"
-            value={node.data.formKey || ''}
-            placeholder="例如：leave-approval-form"
-            onChange={(e) => onNode('formKey', e.target.value)}
-          />
-          <div className={styles.taskOptions}>
-            <span>
-              {node.data.multiInstance?.enable ? '已配置会签' : '未配置会签'}
-              {node.data.formFields?.length
-                ? ' · ' + node.data.formFields.length + ' 个表单字段'
-                : ''}
-              {node.data.taskListeners?.length
-                ? ' · ' + node.data.taskListeners.length + ' 个监听器'
-                : ''}
-            </span>
-            <Button size="small" onClick={onAdvanced}>
-              高级配置
-            </Button>
-          </div>
-        </>
-      )}
-      <Button danger type="text" icon={<DeleteOutlined />} onClick={onDelete}>
-        删除节点
-      </Button>
-    </div>
-  )
-}
-function AdvancedTaskConfig({
-  node,
-  close,
-  onChange,
-}: {
-  node: PNode
-  close: () => void
-  onChange: (data: Data) => void
-}) {
-  const data = node.data
-  const multi = data.multiInstance ?? { enable: false, sequential: false }
-  const fields = data.formFields ?? []
-  const listeners = data.taskListeners ?? []
-  const update = (patch: Partial<Data>) => onChange({ ...data, ...patch })
-  const updateField = (index: number, patch: Partial<FormField>) =>
-    update({ formFields: fields.map((field, i) => (i === index ? { ...field, ...patch } : field)) })
-  const updateListener = (index: number, patch: Partial<TaskListener>) =>
-    update({
-      taskListeners: listeners.map((listener, i) =>
-        i === index ? { ...listener, ...patch } : listener,
-      ),
-    })
-  const fieldTab = (
-    <div className={styles.advancedPanel}>
-      <div className={styles.advancedIntro}>
-        <span>定义用户任务提交或审批时使用的 Camunda 内置表单字段。</span>
-        <Button
-          size="small"
-          icon={<PlusOutlined />}
-          onClick={() =>
-            update({
-              formFields: [...fields, { id: makeId('field'), label: '新字段', type: 'string' }],
-            })
-          }
-        >
-          添加字段
-        </Button>
-      </div>
-      {fields.length === 0 ? (
-        <div className={styles.advancedEmpty}>还没有表单字段，可以先添加一个审批表单项。</div>
-      ) : (
-        <div className={styles.fieldList}>
-          {fields.map((field, index) => (
-            <div className={styles.fieldCard} key={field.id + index}>
-              <div className={styles.fieldCardHead}>
-                <b>字段 {index + 1}</b>
-                <Button
-                  danger
-                  type="text"
-                  size="small"
-                  icon={<DeleteOutlined />}
-                  aria-label="删除表单字段"
-                  onClick={() => update({ formFields: fields.filter((_, i) => i !== index) })}
-                />
-              </div>
-              <div className={styles.fieldGrid}>
-                <label>字段 ID</label>
-                <Input
-                  size="small"
-                  value={field.id}
-                  onChange={(e) => updateField(index, { id: e.target.value })}
-                />
-                <label>显示名称</label>
-                <Input
-                  size="small"
-                  value={field.label || ''}
-                  onChange={(e) => updateField(index, { label: e.target.value })}
-                />
-                <label>字段类型</label>
-                <Select
-                  size="small"
-                  value={field.type}
-                  options={fieldTypes}
-                  onChange={(type: FormFieldType) =>
-                    updateField(index, {
-                      type,
-                      values: type === 'enum' ? (field.values ?? []) : undefined,
-                      datePattern:
-                        type === 'date' ? (field.datePattern ?? 'yyyy-MM-dd') : undefined,
-                    })
-                  }
-                />
-                <label>默认值</label>
-                <Input
-                  size="small"
-                  value={field.defaultValue || ''}
-                  onChange={(e) => updateField(index, { defaultValue: e.target.value })}
-                />
-                {field.type === 'date' && (
-                  <>
-                    <label>日期格式</label>
-                    <Input
-                      size="small"
-                      value={field.datePattern || ''}
-                      placeholder="yyyy-MM-dd"
-                      onChange={(e) => updateField(index, { datePattern: e.target.value })}
-                    />
-                  </>
-                )}
-                {field.type === 'enum' && (
-                  <>
-                    <label>枚举选项</label>
-                    <Input.TextArea
-                      rows={2}
-                      value={(field.values || [])
-                        .map((value) => value.id + (value.name ? '=' + value.name : ''))
-                        .join('\n')}
-                      placeholder={'annual=年假\nsick=病假'}
-                      onChange={(e) =>
-                        updateField(index, {
-                          values: e.target.value
-                            .split('\n')
-                            .filter(Boolean)
-                            .map((line) => {
-                              const [id, ...label] = line.split('=')
-                              return {
-                                id: id.trim(),
-                                ...(label.length ? { name: label.join('=').trim() } : {}),
-                              }
-                            }),
-                        })
-                      }
-                    />
-                  </>
-                )}
-                <label>校验约束</label>
-                <Select
-                  mode="multiple"
-                  size="small"
-                  value={(field.constraints || []).map((constraint) => constraint.name)}
-                  options={fieldConstraints.map(({ value, label }) => ({ value, label }))}
-                  onChange={(values: FormFieldConstraint['name'][]) =>
-                    updateField(index, {
-                      constraints: values.map((name) => ({
-                        name,
-                        ...(['minlength', 'maxlength'].includes(name)
-                          ? {
-                              config:
-                                field.constraints?.find((item) => item.name === name)?.config ||
-                                '1',
-                            }
-                          : {}),
-                      })),
-                    })
-                  }
-                />
-              </div>
-              {(field.constraints || []).some(
-                (constraint) => constraint.name === 'minlength' || constraint.name === 'maxlength',
-              ) && (
-                <div className={styles.constraintList}>
-                  {(field.constraints || [])
-                    .filter(
-                      (constraint) =>
-                        constraint.name === 'minlength' || constraint.name === 'maxlength',
-                    )
-                    .map((constraint) => (
-                      <label key={constraint.name}>
-                        {constraint.name === 'minlength' ? '最小长度' : '最大长度'}
-                        <Input
-                          size="small"
-                          value={constraint.config || ''}
-                          onChange={(e) =>
-                            updateField(index, {
-                              constraints: (field.constraints || []).map((item) =>
-                                item.name === constraint.name
-                                  ? { ...item, config: e.target.value }
-                                  : item,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                    ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-  const multiTab = (
-    <div className={styles.advancedPanel}>
-      <div className={styles.switchRow}>
-        <span>
-          <b>启用会签</b>
-          <small>把处理人集合拆成多个审批实例</small>
-        </span>
-        <Switch
-          checked={multi.enable}
-          onChange={(enable) => update({ multiInstance: { ...multi, enable } })}
-        />
-      </div>
-      {multi.enable ? (
-        <div className={styles.multiGrid}>
-          <label>审批方式</label>
-          <Select
-            value={multi.sequential ? 'sequential' : 'parallel'}
-            options={[
-              { value: 'parallel', label: '并行会签' },
-              { value: 'sequential', label: '串行会签' },
-            ]}
-            onChange={(value: 'parallel' | 'sequential') =>
-              update({ multiInstance: { ...multi, sequential: value === 'sequential' } })
-            }
-          />
-          <label>
-            处理人集合变量 <i>必填</i>
-          </label>
-          <Input
-            value={multi.collection || ''}
-            placeholder="例如：approvers"
-            onChange={(e) => update({ multiInstance: { ...multi, collection: e.target.value } })}
-          />
-          <label>当前处理人变量</label>
-          <Input
-            value={multi.elementVariable || ''}
-            placeholder="例如：approver"
-            onChange={(e) =>
-              update({ multiInstance: { ...multi, elementVariable: e.target.value } })
-            }
-          />
-          <label>提前结束条件</label>
-          <Input.TextArea
-            rows={2}
-            value={multi.completionCondition || ''}
-            placeholder={'例如：$' + '{nrOfCompletedInstances == nrOfInstances}'}
-            onChange={(e) =>
-              update({ multiInstance: { ...multi, completionCondition: e.target.value } })
-            }
-          />
-          <small>留空时等待所有实例完成；表达式按 Camunda EL 传给后端。</small>
-        </div>
-      ) : (
-        <div className={styles.advancedEmpty}>开启后可配置串行或并行会签，以及会签完成条件。</div>
-      )}
-    </div>
-  )
-  const listenerTab = (
-    <div className={styles.advancedPanel}>
-      <div className={styles.advancedIntro}>
-        <span>在任务创建、指派、完成或删除时调用后端监听器。</span>
-        <Button
-          size="small"
-          icon={<PlusOutlined />}
-          onClick={() =>
-            update({
-              taskListeners: [...listeners, { event: 'create', type: 'expression', value: '' }],
-            })
-          }
-        >
-          添加监听器
-        </Button>
-      </div>
-      {listeners.length === 0 ? (
-        <div className={styles.advancedEmpty}>当前任务没有监听器。</div>
-      ) : (
-        <div className={styles.listenerList}>
-          {listeners.map((listener, index) => (
-            <div className={styles.listenerRow} key={index}>
-              <Select
-                size="small"
-                value={listener.event}
-                options={listenerEvents.map(({ value, label }) => ({ value, label }))}
-                onChange={(event: TaskListener['event']) => updateListener(index, { event })}
-              />
-              <Select
-                size="small"
-                value={listener.type}
-                options={listenerTypes.map(({ value, label }) => ({ value, label }))}
-                onChange={(type: TaskListener['type']) => updateListener(index, { type })}
-              />
-              <Input
-                size="small"
-                value={listener.value}
-                placeholder={
-                  listener.type === 'class' ? '监听器全类名' : '根据实现类型填写表达式或 Bean'
-                }
-                status={listener.value.trim() ? undefined : 'error'}
-                onChange={(e) => updateListener(index, { value: e.target.value })}
-              />
-              <Button
-                danger
-                type="text"
-                size="small"
-                icon={<DeleteOutlined />}
-                aria-label="删除任务监听器"
-                onClick={() => update({ taskListeners: listeners.filter((_, i) => i !== index) })}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-  return (
-    <Modal
-      open
-      title={
-        <span>
-          用户任务配置 <small className={styles.modalSubtitle}>{data.name}</small>
-        </span>
-      }
-      width={760}
-      onCancel={close}
-      onOk={close}
-      okText="完成"
-      cancelButtonProps={{ style: { display: 'none' } }}
-      destroyOnClose
-    >
-      <Tabs
-        items={[
-          {
-            key: 'form',
-            label: '表单字段' + (fields.length ? ' · ' + fields.length : ''),
-            children: fieldTab,
+  const nodes = useMemo<ViewNode[]>(
+    () =>
+      model.flow.nodes.map((node, index) => {
+        const people =
+          node.approver?.mode === 'starterSelect'
+            ? '发起人选择审批人'
+            : node.approver?.members?.filter(Boolean).join('、') || ''
+        const meta =
+          node.type === 'approval'
+            ? methodLabels[node.method || 'single'] + ' · ' + people
+            : node.type === 'cc'
+              ? '通知 ' + (node.receivers?.filter(Boolean).join('、') || '待设置')
+              : node.type === 'condition'
+                ? model.flow.edges.filter((edge) => edge.source === node.id).length + ' 条路径'
+                : ''
+        return {
+          id: node.id,
+          type: 'approvalNode',
+          position: positions[node.id] || {
+            x: 80 + (index % 4) * 200,
+            y: 90 + Math.floor(index / 4) * 150,
           },
-          { key: 'multi', label: '会签' + (multi.enable ? ' · 已启用' : ''), children: multiTab },
-          {
-            key: 'listeners',
-            label: '任务监听器' + (listeners.length ? ' · ' + listeners.length : ''),
-            children: listenerTab,
-          },
-        ]}
-      />
-    </Modal>
+          data: { kind: node.type, label: node.name || nodeTypeLabels[node.type], meta },
+        }
+      }),
+    [model, positions],
   )
-}
-function Header({
-  name,
-  count,
-  edges,
-  open,
-  convert,
-  deploy,
-  publication,
-  publishedCurrent,
-}: {
-  name: string
-  count: number
-  edges: number
-  open: () => void
-  convert: () => void
-  deploy: () => void
-  publication?: TaskTemplate
-  publishedCurrent: boolean
-}) {
-  return (
-    <header className={styles.header}>
-      <div>
-        <div className={styles.eyebrow}>流程工作台 / 新建流程</div>
-        <h1>
-          {name}{' '}
-          <Tag>
-            {publishedCurrent
-              ? '已部署 · v' + publication?.version
-              : publication
-                ? '有未部署修改'
-                : '未发布'}
-          </Tag>{' '}
-          <small>
-            <i /> 本地草稿
-          </small>
-        </h1>
-        <p>拖入节点、连接审批路径，快速生成可提交给 Camunda 的流程定义。</p>
-      </div>
-      <div className={styles.headerActions}>
-        <span>
-          {count} 个节点 · {edges} 条连线
-        </span>
-        <Button icon={<CodeOutlined />} onClick={open}>
-          生成请求 JSON
-        </Button>
-        <Button icon={<CodeOutlined />} onClick={convert}>
-          转为 XML
-        </Button>
-        <Button type="primary" icon={<CloudUploadOutlined />} onClick={deploy}>
-          部署任务模板
-        </Button>
-      </div>
-    </header>
+  const edges = useMemo<ViewEdge[]>(
+    () =>
+      model.flow.edges.map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: 'smoothstep',
+        label: edge.conditions?.length || edge.isDefault ? describeEdge(model, edge) : undefined,
+        data: { label: describeEdge(model, edge), isDefault: edge.isDefault },
+        style: { stroke: '#719080', strokeWidth: 2 },
+        labelStyle: { fill: '#62776b', fontSize: 11 },
+        labelBgStyle: { fill: '#fff', fillOpacity: 0.92 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#719080' },
+      })),
+    [model],
   )
-}
-function InteractiveFlow({ s }: { s: Shared }) {
-  const { screenToFlowPosition } = useReactFlow()
-  const onDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    const kind = event.dataTransfer.getData('application/x-process-node') as Kind
-    if (!kinds.some((item) => item.kind === kind)) return
-    s.add(kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }))
-  }
   return (
     <ReactFlow
-      nodes={s.nodes}
-      edges={s.edges}
+      nodes={nodes}
+      edges={edges}
       nodeTypes={nodeTypes}
-      onNodesChange={s.onNodesChange}
-      onEdgesChange={s.onEdgesChange}
-      onConnect={s.onConnect}
-      connectionDragThreshold={1}
-      defaultEdgeOptions={{
-        type: 'smoothstep',
-        style: { stroke: '#718e7d', strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
-      }}
-      onNodeClick={s.selectNode}
-      onEdgeClick={s.selectEdge}
-      onPaneClick={s.clear}
-      onDragOver={(event) => {
-        event.preventDefault()
-        event.dataTransfer.dropEffect = 'move'
-      }}
-      onDrop={onDrop}
+      onNodeDragStop={(_, node) => onPosition(node.id, node.position)}
+      onConnect={onConnect}
+      onNodeClick={(_, node) => onSelectNode(node.id)}
+      onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
       fitView
-      fitViewOptions={{ padding: 0.2 }}
+      fitViewOptions={{ padding: 0.16 }}
       proOptions={{ hideAttribution: true }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#dce6e1" />
       <Controls position="bottom-left" />
-      <MiniMap
-        position="bottom-right"
-        nodeColor={(n) => ((n.data as Data).kind === 'userTask' ? '#d9a85b' : '#73a18e')}
-      />
     </ReactFlow>
   )
 }
-function Canvas({ s }: { s: Shared }) {
-  return (
-    <div className={styles.canvasLayout}>
-      <aside className={styles.left}>
-        <Palette add={s.add} draggable />
-        <p>
-          从节点边缘拖出连线
-          <br />
-          点击对象可修改属性
-        </p>
-      </aside>
-      <div className={styles.canvas}>
-        <div className={styles.canvasBar}>
-          <span>
-            <i />
-            画布编辑 / 拖动节点调整布局
-          </span>
-          <Button type="link" onClick={s.open}>
-            查看请求结构 ↓
-          </Button>
-        </div>
-        <div className={styles.flow}>
-          <ReactFlowProvider>
-            <InteractiveFlow s={s} />
-          </ReactFlowProvider>
-          <span className={styles.flowTip}>节点可从左侧拖入 · 点击连接点并拖到另一节点连线</span>
-        </div>
-      </div>
-      <aside className={styles.right}>
-        <Fields {...s.fields} />
-        <div className={styles.config}>
-          <b className={styles.sectionLabel}>节点配置</b>
-          <Inspector {...s.inspector} />
-        </div>
-        <div className={styles.footer}>
-          <CheckCircleFilled /> 更改仅在当前页面生效
-        </div>
-      </aside>
-    </div>
-  )
+
+function parsePeople(value: string): string[] {
+  return value
+    .split(/[\n,，、]/)
+    .map((name) => name.trim())
+    .filter(Boolean)
 }
-function Steps({ s }: { s: Shared }) {
+function defaultRule(field?: ApprovalFormField): ApprovalConditionRule {
+  return {
+    field: field?.id || '',
+    operator: field?.type === 'number' ? '>' : '==',
+    value:
+      field?.type === 'number' ? 0 : field?.type === 'enum' ? field.options?.[0]?.value || '' : '',
+  }
+}
+function optionValue(label: string, options: ApprovalFieldOption[], ignoreIndex = -1): string {
+  const latin = label
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  let hash = 2166136261
+  for (const character of label) hash = Math.imul(hash ^ character.codePointAt(0)!, 16777619)
+  const base = latin || 'option_' + (hash >>> 0).toString(36)
+  let value = base
+  let suffix = 2
+  while (options.some((option, index) => index !== ignoreIndex && option.value === value))
+    value = base + '_' + suffix++
+  return value
+}
+
+function FormEditor({
+  fields,
+  update,
+  preview,
+}: {
+  fields: ApprovalFormField[]
+  update: (fields: ApprovalFormField[]) => void
+  preview: () => void
+}) {
+  const add = () => {
+    const index = fields.length + 1
+    let id = 'field_' + index
+    while (fields.some((field) => field.id === id))
+      id = 'field_' + index + '_' + createModelId('v').slice(-4)
+    update([...fields, { id, label: '新表单项', type: 'text', required: false }])
+  }
+  const change = (index: number, patch: Partial<ApprovalFormField>) =>
+    update(fields.map((field, i) => (i === index ? { ...field, ...patch } : field)))
+  const updateOption = (
+    field: ApprovalFormField,
+    index: number,
+    patch: Partial<ApprovalFieldOption>,
+  ) => (field.options || []).map((option, i) => (i === index ? { ...option, ...patch } : option))
   return (
-    <div className={styles.stepsLayout}>
-      <main>
-        <div className={styles.stepsHeading}>
-          <div>
-            <small>STEP BUILDER</small>
-            <h2>把审批流程排成步骤</h2>
-            <p>按执行顺序查看节点，分支条件显示在连线卡片中。</p>
-          </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => s.add('userTask')}>
-            添加审批步骤
-          </Button>
+    <section className={styles.panelSection}>
+      <div className={styles.sectionHeading}>
+        <div>
+          <b>发起表单</b>
+          <small>表单字段也用于设置条件分支</small>
         </div>
-        <Palette add={s.add} compact />
-        <div className={styles.stepList}>
-          {s.nodes.map((n, i) => (
-            <div key={n.id}>
-              <button className={styles.step} onClick={() => s.selectNode(undefined, n)}>
-                <i>{String(i + 1).padStart(2, '0')}</i>
-                <span>
-                  <b>{n.data.name}</b>
-                  <small>
-                    {names[n.data.kind]} · {n.id}
-                  </small>
-                </span>
-                {n.data.kind === 'userTask' && <em>{n.data.assignee || '未配置处理人'}</em>}
-              </button>
-              {i < s.nodes.length - 1 && (
-                <div className={styles.stepLink}>
-                  {s.edges
-                    .filter((e) => e.source === n.id)
-                    .map((e) => (
-                      <button key={e.id} onClick={() => s.selectEdge(undefined, e)}>
-                        ↓ {s.nodes.find((x) => x.id === e.target)?.data.name}
-                        {e.data?.conditionExpression || '无条件'}
-                      </button>
-                    ))}
+        <Space size={5}>
+          <Button size="small" icon={<EyeOutlined />} onClick={preview}>
+            预览
+          </Button>
+          <Button size="small" icon={<PlusOutlined />} onClick={add}>
+            添加字段
+          </Button>
+        </Space>
+      </div>
+      <div className={styles.fieldCards}>
+        {fields.map((field, index) => (
+          <article className={styles.fieldCard} key={field.id + index}>
+            <div className={styles.fieldCardHeading}>
+              <span>
+                <i>{index + 1}</i>
+                <b>{field.label || '未命名字段'}</b>
+              </span>
+              <Button
+                aria-label={'删除' + (field.label || '表单字段')}
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => update(fields.filter((_, i) => i !== index))}
+              />
+            </div>
+            <div className={styles.fieldEditor}>
+              <label>显示名称</label>
+              <Input
+                value={field.label}
+                maxLength={60}
+                placeholder="例如：预计请假天数"
+                onChange={(event) => change(index, { label: event.target.value })}
+              />
+              <label>表单类型</label>
+              <Select
+                value={field.type}
+                options={Object.entries(fieldTypeLabels).map(([value, label]) => ({
+                  value,
+                  label,
+                }))}
+                onChange={(type: ApprovalFormField['type']) =>
+                  change(index, {
+                    type,
+                    options:
+                      type === 'enum'
+                        ? field.options || [{ value: 'option_1', label: '选项一' }]
+                        : undefined,
+                  })
+                }
+              />
+              <label>填写要求</label>
+              <Checkbox
+                checked={field.required}
+                onChange={(event) => change(index, { required: event.target.checked })}
+              >
+                必填
+              </Checkbox>
+              {field.type === 'enum' && (
+                <div className={styles.optionsEditor}>
+                  <div className={styles.optionsHeading}>
+                    <b>可选项</b>
+                    <Button
+                      size="small"
+                      type="link"
+                      icon={<PlusOutlined />}
+                      onClick={() => {
+                        const options = field.options || []
+                        const label = '新选项'
+                        change(index, {
+                          options: [...options, { value: optionValue(label, options), label }],
+                        })
+                      }}
+                    >
+                      添加选项
+                    </Button>
+                  </div>
+                  {(field.options || []).map((option, optionIndex) => (
+                    <div className={styles.optionRow} key={option.value + optionIndex}>
+                      <Input
+                        aria-label="选项名称"
+                        value={option.label}
+                        placeholder="显示名称"
+                        onChange={(event) =>
+                          change(index, {
+                            options: updateOption(field, optionIndex, {
+                              label: event.target.value,
+                            }),
+                          })
+                        }
+                      />
+                      <Button
+                        aria-label="删除选项"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          change(index, {
+                            options: field.options?.filter((_, i) => i !== optionIndex),
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                  <small>选项保存值由系统生成，业务人员只需维护显示名称。</small>
                 </div>
               )}
             </div>
-          ))}
-        </div>
-        <div className={styles.quickConnect}>
-          <b>快速连线</b>
-          <Select
-            value={s.sourceId}
-            placeholder="源节点"
-            options={s.nodes.map((n) => ({ value: n.id, label: n.data.name }))}
-            onChange={s.setSourceId}
-          />
-          <span>→</span>
-          <Select
-            value={s.targetId}
-            placeholder="目标节点"
-            options={s.nodes.map((n) => ({ value: n.id, label: n.data.name }))}
-            onChange={s.setTargetId}
-          />
-          <Button onClick={() => s.connect(s.sourceId, s.targetId)}>添加连线</Button>
-        </div>
-      </main>
-      <aside>
-        <Fields {...s.fields} />
-        <div className={styles.asideLabel}>当前选中</div>
-        <Inspector {...s.inspector} />
-        <div className={styles.summary}>
-          <small>{s.processId}</small>
-          {s.nodes.length} 个节点 · {s.edges.length} 条连线
-          <Button type="primary" block onClick={s.open}>
-            预览提交 JSON
-          </Button>
-        </div>
-      </aside>
-    </div>
-  )
-}
-function Structure({ s }: { s: Shared }) {
-  return (
-    <div className={styles.structure}>
-      <header>
-        <div>
-          <small>PROCESS DEFINITION</small>
-          <h2>流程结构清单</h2>
-          <p>像检查接口数据一样快速核对节点和连线。</p>
-        </div>
-        <Button type="primary" icon={<CodeOutlined />} onClick={s.open}>
-          查看完整 JSON
-        </Button>
-      </header>
-      <div className={styles.structureBody}>
-        <main>
-          <div className={styles.processLine}>
-            <b>{s.processName}</b>
-            <code>{s.processId}</code>
-            <Tag color="green">JSON Schema v1.0</Tag>
-            <Button size="small" onClick={() => s.add('userTask')} icon={<PlusOutlined />}>
-              添加用户任务
-            </Button>
-          </div>
-          <h3>
-            节点清单 <small>{s.nodes.length}</small>
-          </h3>
-          <div className={styles.tableHead}>
-            <span>节点</span>
-            <span>类型</span>
-            <span>处理人</span>
-            <span>坐标</span>
-          </div>
-          {s.nodes.map((n, i) => (
-            <button className={styles.row} key={n.id} onClick={() => s.selectNode(undefined, n)}>
-              <span>
-                <i>{i + 1}</i>
-                <b>{n.data.name}</b>
-                <small>{n.id}</small>
-              </span>
-              <span>{names[n.data.kind]}</span>
-              <span>{n.data.assignee || '—'}</span>
-              <span>
-                {Math.round(n.position.x)}, {Math.round(n.position.y)}
-              </span>
-            </button>
-          ))}
-          <h3>
-            连线规则 <small>{s.edges.length}</small>
-          </h3>
-          {s.edges.map((e) => (
-            <button
-              className={styles.edgeRow}
-              key={e.id}
-              onClick={() => s.selectEdge(undefined, e)}
-            >
-              <span>{s.nodes.find((n) => n.id === e.source)?.data.name}</span>→
-              <span>{s.nodes.find((n) => n.id === e.target)?.data.name}</span>
-              <code>{e.data?.conditionExpression || '无条件'}</code>
-            </button>
-          ))}
-        </main>
-        <aside>
-          <Fields {...s.fields} />
-          <div className={styles.asideLabel}>编辑属性</div>
-          <Inspector {...s.inspector} />
-          <pre>
-            {JSON.stringify(
-              { processId: s.processId, nodes: s.nodes.length, flows: s.edges.length },
-              null,
-              2,
-            )}
-          </pre>
-        </aside>
+          </article>
+        ))}
+        {!fields.length && (
+          <div className={styles.emptyCard}>添加表单字段后，发起人填写的信息才能进入审批流程。</div>
+        )}
       </div>
-    </div>
+    </section>
   )
 }
-export function DesignerPage() {
-  const [params, setParams] = useSearchParams()
-  const asked = params.get('variant') as Variant | null
-  const variant = variants.some((v) => v.id === asked) ? asked! : 'canvas'
-  const [nodes, setNodes, onNodesChange] = useNodesState<PNode>(makeNodes())
-  const [edges, setEdges, onEdgesChange] = useEdgesState<PEdge>(makeEdges())
-  const [processId, setProcessId] = useState('leave_approval')
-  const [processName, setProcessName] = useState('请假审批流程')
-  const [sourceId, setSourceId] = useState('')
-  const [targetId, setTargetId] = useState('')
-  const [nodeId, setNodeId] = useState<string | null>(null)
-  const [edgeId, setEdgeId] = useState<string | null>(null)
-  const [advancedNodeId, setAdvancedNodeId] = useState<string | null>(null)
-  const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null)
-  const [publication, setPublication] = useState<{ template: TaskTemplate; definition: string }>()
-  const node = nodes.find((n) => n.id === nodeId)
-  const edge = edges.find((e) => e.id === edgeId)
-  const advancedNode = nodes.find((n) => n.id === advancedNodeId)
-  const setVariant = useCallback(
-    (v: Variant) =>
-      setParams(
-        (p) => {
-          const q = new URLSearchParams(p)
-          q.set('variant', v)
-          return q
-        },
-        { replace: true },
-      ),
-    [setParams],
-  )
-  const add = useCallback(
-    (kind: Kind, position?: { x: number; y: number }) => {
-      const prefix =
-        kind === 'userTask'
-          ? 'task'
-          : kind === 'exclusiveGateway'
-            ? 'gateway'
-            : kind === 'startEvent'
-              ? 'start'
-              : 'end'
-      const id = makeId(prefix)
-      const name =
-        kind === 'userTask'
-          ? '新建审批'
-          : kind === 'exclusiveGateway'
-            ? '条件判断'
-            : kind === 'startEvent'
-              ? '开始'
-              : '结束'
-      setNodes((cur) => [
-        ...cur,
-        {
-          id,
-          type: 'processNode',
-          position: position ?? {
-            x: 220 + (cur.length % 3) * 190,
-            y: 180 + Math.floor(cur.length / 3) * 120,
-          },
-          data: { kind, name, ...(kind === 'userTask' ? { assignee: '' } : {}) },
-        },
-      ])
-      setNodeId(id)
-      setEdgeId(null)
-    },
-    [setNodes],
-  )
-  const connect = useCallback(
-    (source?: string, target?: string) => {
-      if (!source || !target || source === target) return
-      setEdges((cur) =>
-        cur.some((e) => e.source === source && e.target === target)
-          ? cur
-          : addEdge(
-              {
-                id: makeId('flow'),
-                source,
-                target,
-                type: 'smoothstep',
-                style: { stroke: '#718e7d', strokeWidth: 2 },
-                markerEnd: { type: MarkerType.ArrowClosed, color: '#718e7d' },
-                data: {},
-              },
-              cur,
-            ),
-      )
-    },
-    [setEdges],
-  )
-  const onConnect = useCallback(
-    (c: Connection) =>
-      setEdges((cur) =>
-        addEdge(
-          {
-            ...c,
-            id: makeId('flow'),
-            type: 'smoothstep',
-            style: { stroke: '#4f8664', strokeWidth: 2 },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#4f8664' },
-            data: {},
-          },
-          cur,
-        ),
-      ),
-    [setEdges],
-  )
-  const updateNode = (key: 'name' | 'assignee' | 'formKey', value: string) => {
-    if (nodeId)
-      setNodes((cur) =>
-        cur.map((n) =>
-          n.id === nodeId ? { ...n, data: { ...n.data, [key]: value || undefined } } : n,
-        ),
-      )
+
+function ModelExport({
+  model,
+  issues,
+  close,
+}: {
+  model: ApprovalModel
+  issues: string[]
+  close: () => void
+}) {
+  const json = JSON.stringify(model, null, 2)
+  const [copying, setCopying] = useState(false)
+  const download = () => {
+    if (issues.length) return
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = model.process.code + '.approval.json'
+    link.click()
+    URL.revokeObjectURL(url)
   }
-  const updateNodeData = (id: string, data: Data) => {
-    setNodes((cur) => cur.map((n) => (n.id === id ? { ...n, data } : n)))
-  }
-  const updateEdge = (value: string) => {
-    if (edgeId)
-      setEdges((cur) =>
-        cur.map((e) =>
-          e.id === edgeId
-            ? {
-                ...e,
-                label: value || undefined,
-                data: { ...e.data, conditionExpression: value || undefined },
-              }
-            : e,
-        ),
-      )
-  }
-  const remove = () => {
-    if (nodeId) {
-      setNodes((cur) => cur.filter((n) => n.id !== nodeId))
-      setEdges((cur) => cur.filter((e) => e.source !== nodeId && e.target !== nodeId))
-      setNodeId(null)
-    }
-    if (edgeId) {
-      setEdges((cur) => cur.filter((e) => e.id !== edgeId))
-      setEdgeId(null)
+  const copy = async () => {
+    setCopying(true)
+    try {
+      await copyText(json)
+      message.success('业务模型 JSON 已复制')
+    } catch (cause) {
+      message.error(cause instanceof Error ? cause.message : '复制失败')
+    } finally {
+      setCopying(false)
     }
   }
-  const dto = useMemo<DTO>(
-    () => ({
-      processId,
-      processName,
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        type: n.data.kind,
-        name: n.data.name,
-        x: Math.round(n.position.x),
-        y: Math.round(n.position.y),
-        ...(n.data.kind === 'userTask' && n.data.assignee ? { assignee: n.data.assignee } : {}),
-        ...(n.data.kind === 'userTask' && n.data.formKey ? { formKey: n.data.formKey } : {}),
-        ...(n.data.kind === 'userTask' && n.data.multiInstance?.enable
-          ? {
-              multiInstance: {
-                enable: true,
-                ...(n.data.multiInstance.sequential !== undefined
-                  ? { sequential: n.data.multiInstance.sequential }
-                  : {}),
-                ...(n.data.multiInstance.collection
-                  ? { collection: n.data.multiInstance.collection }
-                  : {}),
-                ...(n.data.multiInstance.elementVariable
-                  ? { elementVariable: n.data.multiInstance.elementVariable }
-                  : {}),
-                ...(n.data.multiInstance.completionCondition
-                  ? { completionCondition: n.data.multiInstance.completionCondition }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(n.data.kind === 'userTask' && n.data.taskListeners?.length
-          ? {
-              taskListeners: n.data.taskListeners.map(({ event, type, value }) => ({
-                event,
-                type,
-                value,
-              })),
-            }
-          : {}),
-        ...(n.data.kind === 'userTask' && n.data.formFields?.length
-          ? {
-              formFields: n.data.formFields.map((field) => ({
-                id: field.id,
-                ...(field.label ? { label: field.label } : {}),
-                type: field.type,
-                ...(field.defaultValue ? { defaultValue: field.defaultValue } : {}),
-                ...(field.type === 'date' && field.datePattern
-                  ? { datePattern: field.datePattern }
-                  : {}),
-                ...(field.type === 'enum' ? { values: field.values || [] } : {}),
-                ...(field.constraints?.length
-                  ? {
-                      constraints: field.constraints.map((constraint) => ({
-                        name: constraint.name,
-                        ...(constraint.config ? { config: constraint.config } : {}),
-                      })),
-                    }
-                  : {}),
-              })),
-            }
-          : {}),
-      })),
-      flows: edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        ...(e.data?.conditionExpression ? { conditionExpression: e.data.conditionExpression } : {}),
-      })),
-    }),
-    [processId, processName, nodes, edges],
-  )
-  const fields: FieldsProps = { processId, processName, setProcessId, setProcessName }
-  const inspector: InspectorProps = {
-    node,
-    edge,
-    onNode: updateNode,
-    onEdge: updateEdge,
-    onDelete: remove,
-    onAdvanced: () => {
-      if (node?.data.kind === 'userTask') setAdvancedNodeId(node.id)
-    },
-  }
-  const shared: Shared = {
-    nodes,
-    edges,
-    onNodesChange,
-    onEdgesChange,
-    onConnect,
-    selectNode: (_e, n) => {
-      setNodeId(n.id)
-      setEdgeId(null)
-    },
-    selectEdge: (_e, e) => {
-      setEdgeId(e.id)
-      setNodeId(null)
-    },
-    clear: () => {
-      setNodeId(null)
-      setEdgeId(null)
-    },
-    add,
-    connect,
-    fields,
-    inspector,
-    open: () => setExportFormat('json'),
-    processId,
-    processName,
-    sourceId,
-    targetId,
-    setSourceId,
-    setTargetId,
-  }
-  useEffect(() => {
-    if (!import.meta.env.DEV) return
-    const key = (e: KeyboardEvent) => {
-      if (
-        e.target instanceof HTMLElement &&
-        (e.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName))
-      )
-        return
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-      e.preventDefault()
-      const i = variants.findIndex((v) => v.id === variant)
-      setVariant(variants[(i + (e.key === 'ArrowRight' ? 1 : 2)) % 3].id)
-    }
-    window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
-  }, [variant, setVariant])
   return (
-    <section className={styles.page}>
-      <Header
-        name={processName}
-        count={nodes.length}
-        edges={edges.length}
-        open={() => setExportFormat('json')}
-        convert={() => setExportFormat('xml')}
-        deploy={() => setExportFormat('deploy')}
-        publication={publication?.template}
-        publishedCurrent={publication?.definition === JSON.stringify(dto)}
-      />
-      {variant === 'canvas' && <Canvas s={shared} />}
-      {variant === 'steps' && <Steps s={shared} />}
-      {variant === 'structure' && <Structure s={shared} />}
-      {import.meta.env.DEV && (
-        <div className={styles.switcher}>
-          <button
-            aria-label="上一个方案"
-            onClick={() =>
-              setVariant(variants[(variants.findIndex((v) => v.id === variant) + 2) % 3].id)
-            }
+    <Modal
+      open
+      width={760}
+      title={
+        <span>
+          <CodeOutlined /> 业务模型 JSON
+        </span>
+      }
+      onCancel={close}
+      footer={
+        <Space>
+          <Button onClick={close}>关闭</Button>
+          <Button icon={<DownloadOutlined />} disabled={Boolean(issues.length)} onClick={download}>
+            下载 JSON
+          </Button>
+          <Button
+            type="primary"
+            icon={<CopyOutlined />}
+            loading={copying}
+            onClick={() => void copy()}
           >
-            <ArrowLeftOutlined />
-          </button>
-          <span>
-            <i>PROTOTYPE</i>
-            <b>{variants.find((v) => v.id === variant)?.label}</b>
-          </span>
-          <button
-            aria-label="下一个方案"
-            onClick={() =>
-              setVariant(variants[(variants.findIndex((v) => v.id === variant) + 1) % 3].id)
-            }
-          >
-            <ArrowRightOutlined />
-          </button>
-        </div>
-      )}
-      {exportFormat && (
-        <ProcessExportDrawer
-          definition={dto}
-          initialFormat={exportFormat}
-          issues={getSchemaIssues(dto)}
-          close={() => setExportFormat(null)}
-          onPublished={(template, definition) =>
-            setPublication({ template, definition: JSON.stringify(definition) })
+            复制 JSON
+          </Button>
+        </Space>
+      }
+    >
+      {issues.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="模型还需要完善"
+          description={
+            <ul className={styles.issueList}>
+              {issues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
           }
         />
       )}
-      {advancedNode?.data.kind === 'userTask' && (
-        <AdvancedTaskConfig
-          node={advancedNode}
-          close={() => setAdvancedNodeId(null)}
-          onChange={(data) => updateNodeData(advancedNode.id, data)}
-        />
+      <p className={styles.exportNote}>
+        这是业务模型契约，不含画布坐标或流程引擎配置；校验通过后可下载并交给后端编译。
+      </p>
+      <Input.TextArea
+        aria-label="业务模型 JSON 内容"
+        value={json}
+        readOnly
+        autoSize={{ minRows: 15, maxRows: 25 }}
+        className={styles.jsonPreview}
+      />
+    </Modal>
+  )
+}
+
+export function DesignerPage() {
+  const [model, setModel] = useState(createInitialApprovalModel)
+  const [positions, setPositions] = useState<PositionMap>(initialPositions)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [formPreviewOpen, setFormPreviewOpen] = useState(false)
+  const issues = useMemo(() => validateApprovalModel(model), [model])
+  const selectedNode = model.flow.nodes.find((node) => node.id === selectedNodeId)
+  const selectedEdge = model.flow.edges.find((edge) => edge.id === selectedEdgeId)
+  const edit = (change: (current: ApprovalModel) => ApprovalModel) =>
+    setModel((current) => change(current))
+  const updateNode = (id: string, patch: Partial<ApprovalNode>) =>
+    edit((current) => ({
+      ...current,
+      flow: {
+        ...current.flow,
+        nodes: current.flow.nodes.map((node) => (node.id === id ? { ...node, ...patch } : node)),
+      },
+    }))
+  const addNode = (type: ApprovalNodeType) => {
+    if (
+      (type === 'start' || type === 'end') &&
+      model.flow.nodes.some((node) => node.type === type)
+    ) {
+      message.info('流程只需要一个' + nodeTypeLabels[type] + '步骤。')
+      return
+    }
+    const id = createModelId(type)
+    const defaults: Record<ApprovalNodeType, ApprovalNode> = {
+      start: { id, type },
+      approval: {
+        id,
+        type,
+        name: '新审批步骤',
+        approver: { mode: 'member', members: [] },
+        method: 'single',
+      },
+      condition: { id, type, name: '条件分支' },
+      cc: { id, type, name: '抄送步骤', receivers: [] },
+      end: { id, type },
+    }
+    edit((current) => ({
+      ...current,
+      flow: { ...current.flow, nodes: [...current.flow.nodes, defaults[type]] },
+    }))
+    setPositions((current) => ({
+      ...current,
+      [id]: {
+        x: 120 + (model.flow.nodes.length % 4) * 210,
+        y: 330 + Math.floor(model.flow.nodes.length / 4) * 130,
+      },
+    }))
+    setSelectedNodeId(id)
+    setSelectedEdgeId(null)
+  }
+  const removeNode = (id: string) => {
+    edit((current) => ({
+      ...current,
+      flow: {
+        nodes: current.flow.nodes.filter((node) => node.id !== id),
+        edges: current.flow.edges.filter((edge) => edge.source !== id && edge.target !== id),
+      },
+    }))
+    setSelectedNodeId(null)
+    setSelectedEdgeId(null)
+  }
+  const connect = (connection: Connection) => {
+    if (
+      !connection.source ||
+      !connection.target ||
+      connection.source === connection.target ||
+      model.flow.edges.some(
+        (edge) => edge.source === connection.source && edge.target === connection.target,
+      )
+    )
+      return
+    const isCondition =
+      model.flow.nodes.find((node) => node.id === connection.source)?.type === 'condition'
+    const hasDefault = model.flow.edges.some(
+      (edge) => edge.source === connection.source && edge.isDefault,
+    )
+    const edge: ApprovalEdge = {
+      id: createModelId('edge'),
+      source: connection.source,
+      target: connection.target,
+      ...(isCondition && !hasDefault ? { isDefault: true } : {}),
+    }
+    edit((current) => ({
+      ...current,
+      flow: { ...current.flow, edges: [...current.flow.edges, edge] },
+    }))
+    setSelectedEdgeId(edge.id)
+    setSelectedNodeId(null)
+  }
+  const updateEdge = (id: string, patch: Partial<ApprovalEdge>) =>
+    edit((current) => ({
+      ...current,
+      flow: {
+        ...current.flow,
+        edges: current.flow.edges.map((edge) => {
+          if (edge.id === id) return { ...edge, ...patch }
+          const selected = current.flow.edges.find((item) => item.id === id)
+          if (patch.isDefault && selected && edge.source === selected.source)
+            return { ...edge, isDefault: undefined }
+          return edge
+        }),
+      },
+    }))
+  const addRule = (edge: ApprovalEdge) =>
+    updateEdge(edge.id, {
+      isDefault: undefined,
+      conditions: [
+        ...(edge.conditions || []),
+        defaultRule(model.form.fields.find((field) => field.type !== 'date')),
+      ],
+    })
+  const updateRule = (edge: ApprovalEdge, index: number, patch: Partial<ApprovalConditionRule>) => {
+    if (patch.field === '__remove__') {
+      updateEdge(edge.id, { conditions: edge.conditions?.filter((_, i) => i !== index) })
+      return
+    }
+    const conditions = (edge.conditions || []).map((rule, i) => {
+      if (i !== index) return rule
+      if (patch.field)
+        return {
+          ...defaultRule(model.form.fields.find((field) => field.id === patch.field)),
+          ...patch,
+        }
+      return { ...rule, ...patch }
+    })
+    updateEdge(edge.id, { conditions, isDefault: undefined })
+  }
+  const removeEdge = (id: string) => {
+    edit((current) => ({
+      ...current,
+      flow: { ...current.flow, edges: current.flow.edges.filter((edge) => edge.id !== id) },
+    }))
+    setSelectedEdgeId(null)
+  }
+  const fieldsForRules = model.form.fields
+    .filter((field) => field.type !== 'date')
+    .map((field) => ({ value: field.id, label: field.label || '未命名字段' }))
+  const updateFields = (fields: ApprovalFormField[]) =>
+    edit((current) => ({
+      ...current,
+      form: { fields },
+      flow: {
+        ...current.flow,
+        edges: current.flow.edges.map((edge) => ({
+          ...edge,
+          conditions: edge.conditions?.filter((rule) =>
+            fields.some((field) => field.id === rule.field),
+          ),
+        })),
+      },
+    }))
+  const updateProcessName = (name: string) =>
+    edit((current) => ({ ...current, process: { ...current.process, name } }))
+
+  return (
+    <section className={styles.page}>
+      <header className={styles.header}>
+        <div className={styles.headingCopy}>
+          <div className={styles.eyebrow}>审批流程 / 业务模型</div>
+          <div className={styles.titleLine}>
+            <h1>{model.process.name || '未命名审批'}</h1>
+            <Tag color={issues.length ? 'orange' : 'green'}>
+              {issues.length ? '待完善' : '模型有效'}
+            </Tag>
+          </div>
+          <p>用业务语言配置表单与审批步骤，系统会将模型交给后端编译。</p>
+        </div>
+        <div className={styles.headerActions}>
+          <span>
+            {model.flow.nodes.length} 个步骤 · {model.flow.edges.length} 条路径
+          </span>
+          <Button type="primary" icon={<CodeOutlined />} onClick={() => setExportOpen(true)}>
+            查看业务模型 JSON
+          </Button>
+        </div>
+      </header>
+      <div className={styles.modelWorkspace}>
+        <aside className={styles.leftPanel}>
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
+              <div>
+                <b>添加步骤</b>
+                <small>将流程拆成清楚的业务步骤</small>
+              </div>
+            </div>
+            <div className={styles.nodePalette}>
+              {nodeOrder.map((type) => (
+                <Button
+                  key={type}
+                  disabled={
+                    (type === 'start' || type === 'end') &&
+                    model.flow.nodes.some((node) => node.type === type)
+                  }
+                  onClick={() => addNode(type)}
+                >
+                  <i className={styles['palette' + type]}>
+                    {type === 'condition' ? '◇' : nodeTypeLabels[type].slice(0, 1)}
+                  </i>
+                  {nodeTypeLabels[type]}
+                  <PlusOutlined />
+                </Button>
+              ))}
+            </div>
+          </section>
+          <FormEditor
+            fields={model.form.fields}
+            update={updateFields}
+            preview={() => setFormPreviewOpen(true)}
+          />
+          <section className={styles.rejectNote}>
+            <CheckCircleFilled />
+            <span>
+              <b>审批打回</b>
+              <small>发起人修改表单并重新提交后，流程回到打回它的审批步骤。</small>
+            </span>
+          </section>
+        </aside>
+        <main className={styles.flowPanel}>
+          <div className={styles.flowBar}>
+            <span>
+              <ApartmentOutlined /> 流程预览
+            </span>
+            <small>拖动步骤调整布局 · 从步骤右侧连接点拖出路径</small>
+          </div>
+          <div className={styles.flowCanvas}>
+            <ReactFlowProvider>
+              <ModelCanvas
+                model={model}
+                positions={positions}
+                onPosition={(id, position) =>
+                  setPositions((current) => ({ ...current, [id]: position }))
+                }
+                onConnect={connect}
+                onSelectNode={(id) => {
+                  setSelectedNodeId(id)
+                  setSelectedEdgeId(null)
+                }}
+                onSelectEdge={(id) => {
+                  setSelectedEdgeId(id)
+                  setSelectedNodeId(null)
+                }}
+              />
+            </ReactFlowProvider>
+          </div>
+          <div className={styles.flowHint}>条件分支需要至少两条路径，并且恰好一条默认分支。</div>
+        </main>
+        <aside className={styles.rightPanel}>
+          <section className={styles.panelSection}>
+            <div className={styles.sectionHeading}>
+              <div>
+                <b>流程信息</b>
+                <small>供业务人员识别</small>
+              </div>
+            </div>
+            <label className={styles.formLabel}>流程名称</label>
+            <Input
+              value={model.process.name}
+              maxLength={120}
+              onChange={(event) => updateProcessName(event.target.value)}
+            />
+          </section>
+          <section className={styles.inspectorSection}>
+            <div className={styles.sectionHeading}>
+              <div>
+                <b>{selectedNode ? '步骤设置' : selectedEdge ? '路径设置' : '编辑说明'}</b>
+                <small>
+                  {selectedNode
+                    ? nodeTypeLabels[selectedNode.type]
+                    : selectedEdge
+                      ? '设置业务条件'
+                      : '选择流程中的步骤或路径'}
+                </small>
+              </div>
+            </div>
+            {!selectedNode && !selectedEdge && (
+              <div className={styles.inspectorEmpty}>
+                <ApartmentOutlined />
+                <b>选择步骤或路径</b>
+                <span>右侧显示业务设置，不需要填写流程引擎配置。</span>
+              </div>
+            )}
+            {selectedNode && (
+              <div className={styles.inspector}>
+                {!['start', 'end'].includes(selectedNode.type) && (
+                  <>
+                    <label className={styles.formLabel}>步骤名称</label>
+                    <Input
+                      value={selectedNode.name || ''}
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, { name: event.target.value })
+                      }
+                    />
+                  </>
+                )}
+                {selectedNode.type === 'approval' && (
+                  <ApprovalInspector node={selectedNode} update={updateNode} />
+                )}
+                {selectedNode.type === 'cc' && (
+                  <>
+                    <label className={styles.formLabel}>通知对象</label>
+                    <Input.TextArea
+                      rows={3}
+                      value={(selectedNode.receivers || []).join('、')}
+                      placeholder="每行填写一位成员姓名"
+                      onChange={(event) =>
+                        updateNode(selectedNode.id, { receivers: parsePeople(event.target.value) })
+                      }
+                    />
+                    <small>填写一位或多位接收通知的成员。</small>
+                  </>
+                )}
+                {selectedNode.type === 'condition' && (
+                  <p className={styles.helperText}>
+                    选中每条路径设置表单字段条件，并指定一条默认分支。
+                  </p>
+                )}
+                {selectedNode.type === 'start' && (
+                  <p className={styles.helperText}>审批从这里开始，发起人填写左侧定义的表单。</p>
+                )}
+                {selectedNode.type === 'end' && (
+                  <p className={styles.helperText}>审批完成后到达这里。</p>
+                )}
+                <Button
+                  className={styles.removeButton}
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => removeNode(selectedNode.id)}
+                >
+                  删除此步骤
+                </Button>
+              </div>
+            )}
+            {selectedEdge && (
+              <EdgeInspector
+                edge={selectedEdge}
+                model={model}
+                fieldOptions={fieldsForRules}
+                updateRule={updateRule}
+                updateEdge={updateEdge}
+                addRule={addRule}
+                remove={removeEdge}
+              />
+            )}
+          </section>
+          <div className={styles.validationBox}>
+            <div className={styles.validationHeading}>
+              <b>导出前检查</b>
+              <span>{issues.length ? issues.length + ' 项待完善' : '全部通过'}</span>
+            </div>
+            {issues.length ? (
+              <ul>
+                {issues.slice(0, 4).map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            ) : (
+              <p>表单、审批人和分支结构符合业务模型约定。</p>
+            )}
+            {issues.length > 4 && <small>还有 {issues.length - 4} 项，打开 JSON 查看全部。</small>}
+          </div>
+        </aside>
+      </div>
+      {formPreviewOpen && (
+        <Modal open title="发起表单预览" footer={null} onCancel={() => setFormPreviewOpen(false)}>
+          <div className={styles.previewForm}>
+            <p>发起人会填写以下内容，然后提交审批。</p>
+            {model.form.fields.length ? (
+              model.form.fields.map((field) => (
+                <label key={field.id}>
+                  <span>
+                    {field.label || '未命名字段'}
+                    {field.required && <i>必填</i>}
+                  </span>
+                  {field.type === 'enum' ? (
+                    <Select
+                      placeholder="请选择"
+                      options={(field.options || []).map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                      }))}
+                    />
+                  ) : field.type === 'number' ? (
+                    <InputNumber placeholder="请输入数字" style={{ width: '100%' }} />
+                  ) : field.type === 'date' ? (
+                    <DatePicker placeholder="请选择日期" style={{ width: '100%' }} />
+                  ) : (
+                    <Input placeholder="请输入" />
+                  )}
+                </label>
+              ))
+            ) : (
+              <div className={styles.emptyCard}>表单还没有字段，请先添加表单项。</div>
+            )}
+          </div>
+        </Modal>
+      )}
+      {exportOpen && (
+        <ModelExport model={model} issues={issues} close={() => setExportOpen(false)} />
       )}
     </section>
+  )
+}
+
+function ApprovalInspector({
+  node,
+  update,
+}: {
+  node: ApprovalNode
+  update: (id: string, patch: Partial<ApprovalNode>) => void
+}) {
+  const mode = node.approver?.mode || 'member'
+  const members = node.approver?.members || []
+  const method = node.method || 'single'
+  return (
+    <div className={styles.inspectorGroup}>
+      <label className={styles.formLabel}>审批人来源</label>
+      <Select
+        value={mode}
+        options={[
+          { value: 'member', label: '指定成员' },
+          { value: 'starterSelect', label: '发起人自选' },
+        ]}
+        onChange={(value: 'member' | 'starterSelect') =>
+          update(node.id, {
+            approver: { mode: value, ...(value === 'member' ? { members } : {}) },
+            method: 'single',
+          })
+        }
+      />
+      {mode === 'member' ? (
+        <>
+          <label className={styles.formLabel}>审批成员</label>
+          <Input.TextArea
+            rows={3}
+            value={members.join('、')}
+            placeholder="例如：张伟、李娜"
+            onChange={(event) => {
+              const nextMembers = parsePeople(event.target.value)
+              update(node.id, {
+                approver: { mode: 'member', members: nextMembers },
+                ...(nextMembers.length <= 1
+                  ? { method: 'single' }
+                  : method === 'single'
+                    ? { method: undefined }
+                    : {}),
+              })
+            }}
+          />
+          <small>
+            按姓名填写，一行一人；第一版暂不连接组织通讯录。姓名暂不核验，填写错误会导致待办无人可见。
+          </small>
+        </>
+      ) : (
+        <p className={styles.helperText}>发起人在提交表单时选择一位审批人。</p>
+      )}
+      {mode === 'member' && (
+        <>
+          <label className={styles.formLabel}>审批方式</label>
+          <Select
+            value={node.method}
+            placeholder="请选择审批方式"
+            options={Object.entries(methodLabels).map(([value, label]) => ({ value, label }))}
+            onChange={(value: ApprovalMethod) => update(node.id, { method: value })}
+          />
+        </>
+      )}
+      {mode === 'member' && members.filter(Boolean).length > 1 && method === 'single' && (
+        <Alert type="warning" showIcon message="多位审批人需要选择会签或或签。" />
+      )}
+      {method === 'countersign' && <small>所有审批成员都通过后，这一步才完成。</small>}
+      {method === 'orsign' && <small>任意一位审批成员通过后，这一步就完成。</small>}
+    </div>
+  )
+}
+
+function EdgeInspector({
+  edge,
+  model,
+  fieldOptions,
+  updateRule,
+  updateEdge,
+  addRule,
+  remove,
+}: {
+  edge: ApprovalEdge
+  model: ApprovalModel
+  fieldOptions: Array<{ value: string; label: string }>
+  updateRule: (edge: ApprovalEdge, index: number, patch: Partial<ApprovalConditionRule>) => void
+  updateEdge: (id: string, patch: Partial<ApprovalEdge>) => void
+  addRule: (edge: ApprovalEdge) => void
+  remove: (id: string) => void
+}) {
+  const source = model.flow.nodes.find((node) => node.id === edge.source)
+  const target = model.flow.nodes.find((node) => node.id === edge.target)
+  const isCondition = source?.type === 'condition'
+  return (
+    <div className={styles.inspector}>
+      <small className={styles.edgeCaption}>
+        {source?.name || nodeTypeLabels[source?.type || 'start']} →{' '}
+        {target?.name || nodeTypeLabels[target?.type || 'end']}
+      </small>
+      {isCondition && (
+        <Checkbox
+          checked={Boolean(edge.isDefault)}
+          onChange={(event) =>
+            updateEdge(edge.id, {
+              isDefault: event.target.checked ? true : undefined,
+              conditions: event.target.checked ? undefined : [],
+            })
+          }
+        >
+          设为默认分支
+        </Checkbox>
+      )}
+      {isCondition && !edge.isDefault && (
+        <div className={styles.ruleList}>
+          <div className={styles.ruleHeading}>
+            <b>满足以下条件时经过</b>
+            <Button
+              type="link"
+              size="small"
+              disabled={!model.form.fields.some((field) => field.type !== 'date')}
+              onClick={() => addRule(edge)}
+            >
+              添加条件
+            </Button>
+          </div>
+          {(edge.conditions || []).map((rule, index) => {
+            const field = model.form.fields.find((item) => item.id === rule.field)
+            const operators =
+              field?.type === 'number' ? operatorOptions : operatorOptions.slice(0, 2)
+            return (
+              <div className={styles.ruleCard} key={rule.field + index}>
+                <div className={styles.ruleCardHeading}>
+                  <span>条件 {index + 1}</span>
+                  <Button
+                    type="text"
+                    danger
+                    size="small"
+                    aria-label="删除条件"
+                    icon={<DeleteOutlined />}
+                    onClick={() => updateRule(edge, index, { field: '__remove__' })}
+                  />
+                </div>
+                <label className={styles.formLabel}>表单字段</label>
+                <Select
+                  value={rule.field || undefined}
+                  placeholder="选择字段"
+                  options={fieldOptions}
+                  onChange={(value: string) => updateRule(edge, index, { field: value })}
+                />
+                {field && (
+                  <>
+                    <label className={styles.formLabel}>比较方式</label>
+                    <Select
+                      value={rule.operator}
+                      options={operators}
+                      onChange={(value: ApprovalOperator) =>
+                        updateRule(edge, index, { operator: value })
+                      }
+                    />
+                    <label className={styles.formLabel}>比较值</label>
+                    {field.type === 'enum' ? (
+                      <Select
+                        value={String(rule.value)}
+                        options={(field.options || []).map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                        }))}
+                        onChange={(value: string) => updateRule(edge, index, { value })}
+                      />
+                    ) : (
+                      <Input
+                        type={
+                          field.type === 'number'
+                            ? 'number'
+                            : field.type === 'date'
+                              ? 'date'
+                              : 'text'
+                        }
+                        value={String(rule.value)}
+                        onChange={(event) =>
+                          updateRule(edge, index, {
+                            value:
+                              field.type === 'number' && event.target.value !== ''
+                                ? Number(event.target.value)
+                                : event.target.value,
+                          })
+                        }
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {!(edge.conditions || []).length && (
+            <div className={styles.emptyRule}>
+              {model.form.fields.some((field) => field.type !== 'date')
+                ? '添加一个条件，或将这条路径设为默认分支。'
+                : '先在左侧添加文本、数字或单选项字段，再设置条件。'}
+            </div>
+          )}
+          {(edge.conditions || []).length > 1 && <small>多个条件需同时满足。</small>}
+        </div>
+      )}
+      {!isCondition && <p className={styles.helperText}>普通步骤之间的连接不需要额外设置条件。</p>}
+      <Button
+        className={styles.removeButton}
+        danger
+        icon={<DeleteOutlined />}
+        onClick={() => remove(edge.id)}
+      >
+        删除这条路径
+      </Button>
+    </div>
   )
 }
