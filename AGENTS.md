@@ -20,3 +20,4 @@
 ### 领域文档
 
 本仓库采用单上下文布局。详见 `docs/agents/domain.md`。
+涉及审批流业务语义时，同时以 `docs/examples/立项申请.bpmn` 作为业务基准示例。

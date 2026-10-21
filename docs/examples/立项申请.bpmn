@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_1" targetNamespace="http://camunda.org/examples" xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <process id="Process_Project_JSON" isExecutable="true" name="立项申请">
+    <startEvent id="StartEvent_1" name="开始"/>
+    <userTask camunda:assignee="${startUser}" id="Activity_1y69hgg" name="立项申请单"/>
+    <userTask camunda:assignee="${director}" id="Activity_07e5zui" name="部所长审核"/>
+    <exclusiveGateway id="Gateway_1vdsxth" name=""/>
+    <userTask camunda:assignee="${assignee}" id="Activity_0mm4jhp" name="各部门经理会签">
+      <extensionElements>
+        <camunda:taskListener delegateExpression="${singleVoteListener}" event="create"/>
+        <camunda:taskListener delegateExpression="${singleVoteListener}" event="complete"/>
+      </extensionElements>
+      <multiInstanceLoopCharacteristics camunda:collection="${assigneeList}" camunda:elementVariable="assignee" id="mi_Activity_0mm4jhp" isSequential="false">
+        <completionCondition id="completionCondition_78de79b2-62ec-46c5-8852-de4016a2d5f0">${decided}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+    </userTask>
+    <exclusiveGateway id="Gateway_1qazxnp" name=""/>
+    <endEvent id="Event_16milde" name="完成"/>
+    <sequenceFlow id="Flow_164b04b" sourceRef="StartEvent_1" targetRef="Activity_1y69hgg"/>
+    <sequenceFlow id="Flow_0isrshj" sourceRef="Activity_1y69hgg" targetRef="Activity_07e5zui"/>
+    <sequenceFlow id="Flow_1t6r6aa" sourceRef="Activity_07e5zui" targetRef="Gateway_1vdsxth"/>
+    <sequenceFlow id="Flow_0gg4on1" sourceRef="Gateway_1vdsxth" targetRef="Activity_1y69hgg">
+      <conditionExpression id="conditionExpression_7cef7951-b00b-47df-99ef-d4e8ab19696c">${!approved}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_1y26212" sourceRef="Gateway_1vdsxth" targetRef="Activity_0mm4jhp">
+      <conditionExpression id="conditionExpression_f65fc61b-f496-42d8-86d5-3010f74998c5">${approved}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_0lqlhrk" sourceRef="Activity_0mm4jhp" targetRef="Gateway_1qazxnp"/>
+    <sequenceFlow id="Flow_1hn02gx" sourceRef="Gateway_1qazxnp" targetRef="Activity_1y69hgg">
+      <conditionExpression id="conditionExpression_b32a7661-47e2-4927-aaac-d13778aa31e4">${!passed}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_0samyol" sourceRef="Gateway_1qazxnp" targetRef="Event_16milde">
+      <conditionExpression id="conditionExpression_cd5b102c-7d68-4a8a-b697-81f2ee1142ae">${passed}</conditionExpression>
+    </sequenceFlow>
+  </process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane bpmnElement="Process_Project_JSON" id="Plane_1">
+      <bpmndi:BPMNShape bpmnElement="StartEvent_1" id="shape_StartEvent_1">
+        <dc:Bounds height="36.0" width="36.0" x="182.0" y="162.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_7150ed5f-779a-44a4-855c-d144c58acc62">
+          <dc:Bounds height="36.0" width="36.0" x="182.0" y="162.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_1y69hgg" id="shape_Activity_1y69hgg">
+        <dc:Bounds height="80.0" width="100.0" x="270.0" y="140.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_07e5zui" id="shape_Activity_07e5zui">
+        <dc:Bounds height="80.0" width="100.0" x="430.0" y="140.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_1vdsxth" id="shape_Gateway_1vdsxth">
+        <dc:Bounds height="50.0" width="50.0" x="595.0" y="155.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_0mm4jhp" id="shape_Activity_0mm4jhp">
+        <dc:Bounds height="80.0" width="100.0" x="710.0" y="140.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_1qazxnp" id="shape_Gateway_1qazxnp">
+        <dc:Bounds height="50.0" width="50.0" x="875.0" y="155.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Event_16milde" id="shape_Event_16milde">
+        <dc:Bounds height="36.0" width="36.0" x="992.0" y="162.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_c58478b4-b531-4be8-bf71-4b93443701a8">
+          <dc:Bounds height="36.0" width="36.0" x="992.0" y="162.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="Flow_164b04b" id="edge_Flow_164b04b">
+        <di:waypoint x="218.0" y="180.0"/>
+        <di:waypoint x="270.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0isrshj" id="edge_Flow_0isrshj">
+        <di:waypoint x="370.0" y="180.0"/>
+        <di:waypoint x="430.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1t6r6aa" id="edge_Flow_1t6r6aa">
+        <di:waypoint x="530.0" y="180.0"/>
+        <di:waypoint x="595.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0gg4on1" id="edge_Flow_0gg4on1">
+        <di:waypoint x="620.0" y="205.0"/>
+        <di:waypoint x="620.0" y="240.0"/>
+        <di:waypoint x="320.0" y="240.0"/>
+        <di:waypoint x="320.0" y="220.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1y26212" id="edge_Flow_1y26212">
+        <di:waypoint x="645.0" y="180.0"/>
+        <di:waypoint x="710.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0lqlhrk" id="edge_Flow_0lqlhrk">
+        <di:waypoint x="810.0" y="180.0"/>
+        <di:waypoint x="875.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1hn02gx" id="edge_Flow_1hn02gx">
+        <di:waypoint x="900.0" y="205.0"/>
+        <di:waypoint x="900.0" y="240.0"/>
+        <di:waypoint x="320.0" y="240.0"/>
+        <di:waypoint x="320.0" y="220.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0samyol" id="edge_Flow_0samyol">
+        <di:waypoint x="925.0" y="180.0"/>
+        <di:waypoint x="992.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
