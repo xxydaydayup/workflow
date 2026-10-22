@@ -57,7 +57,7 @@ import {
   type ApprovalOperator,
 } from './approvalModel'
 import styles from './DesignerPage.module.less'
-import { DesignerPrototype, type DesignerVariant } from './DesignerPrototype'
+import { DesignerPrototype } from './DesignerPrototype'
 import '@xyflow/react/dist/style.css'
 
 type PositionMap = Record<string, { x: number; y: number }>
@@ -460,24 +460,9 @@ function ModelExport({
 }
 
 export function DesignerPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const requestedVariant = searchParams.get('variant') as DesignerVariant | null
-  const variant: DesignerVariant | null =
-    requestedVariant === 'canvas' || requestedVariant === 'steps' || requestedVariant === 'routes'
-      ? requestedVariant
-      : null
-
-  if (import.meta.env.DEV && variant) {
-    return (
-      <DesignerPrototype
-        variant={variant}
-        onVariantChange={(nextVariant) => {
-          const next = new URLSearchParams(searchParams)
-          next.set('variant', nextVariant)
-          setSearchParams(next, { replace: true })
-        }}
-      />
-    )
+  const [searchParams] = useSearchParams()
+  if (import.meta.env.DEV && searchParams.get('variant') === 'canvas') {
+    return <DesignerPrototype />
   }
 
   return <ProductionDesignerPage />

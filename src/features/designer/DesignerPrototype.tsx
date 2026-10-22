@@ -1,988 +1,1024 @@
 /**
- * Throwaway UI prototype: three structurally different layouts on /designer,
- * switchable via ?variant=canvas|steps|routes.
+ * Throwaway UI prototype for the business-first approval flow designer.
+ * The existing /designer route mounts it only in development with ?variant=canvas.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useMemo, useState, type DragEvent } from 'react'
 import {
-  ArrowLeftOutlined,
-  ArrowRightOutlined,
-  BranchesOutlined,
+  addEdge,
+  Background,
+  BackgroundVariant,
+  Controls,
+  Handle,
+  MarkerType,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  reconnectEdge,
+  useEdgesState,
+  useNodesState,
+  useReactFlow,
+  type Connection,
+  type Edge,
+  type Node,
+  type NodeProps,
+} from '@xyflow/react'
+import {
+  ApartmentOutlined,
   CheckCircleFilled,
-  CheckOutlined,
+  CloseOutlined,
+  DeleteOutlined,
+  DragOutlined,
+  ExclamationCircleOutlined,
   FileTextOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
+  ReloadOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Button, Input, Select, Tag } from 'antd'
+import { Alert, Button, Input, Select, Tag } from 'antd'
 import styles from './DesignerPrototype.module.less'
 
-export type DesignerVariant = 'canvas' | 'steps' | 'routes'
-type Kind = 'start' | 'apply' | 'approval' | 'countersign' | 'result' | 'condition' | 'end'
-type Branch = 'pass' | 'reject' | 'default' | 'condition'
-interface FlowNode {
-  id: string
-  kind: Kind
-  name: string
-  detail?: string
+type NodeKind = 'start' | 'approval' | 'condition' | 'countersign' | 'end'
+type Branch = 'continue' | 'pass' | 'reject'
+type NodeData = { kind: NodeKind; name: string; purpose?: 'application' | 'review' }
+type EdgeData = { branch: Branch }
+type PaletteEntry = {
+  kind: NodeKind
+  title: string
+  detail: string
+  icon: string
+  purpose?: 'application' | 'review'
 }
-interface FlowEdge {
-  id: string
-  source: string
-  target: string
-  branch?: Branch
-  label?: string
-}
+type BusinessNode = Node<NodeData, 'business'>
+type BusinessEdge = Edge<EdgeData>
+type ValidationIssue = { message: string; nodeId?: string; edgeId?: string }
 
-const labels: Record<Kind, string> = {
+const nodeLabels: Record<NodeKind, string> = {
   start: '开始',
-  apply: '申请填写',
-  approval: '审批表决',
+  approval: '审批',
+  condition: '条件分支',
   countersign: '会签',
-  result: '审批结果',
-  condition: '表单条件',
   end: '结束',
 }
-const marks: Record<Kind, string> = {
-  start: '始',
-  apply: '表',
-  approval: '审',
-  countersign: '签',
-  result: '分',
-  condition: '◇',
-  end: '终',
+const nodeDescriptions: Record<NodeKind, string> = {
+  start: '流程的唯一入口',
+  approval: '按流程约定完成审批表决',
+  condition: '依据上一步的审批结果分流',
+  countersign: '所有参与人同意后继续',
+  end: '流程的唯一完成出口',
 }
-const names: Record<DesignerVariant, string> = {
-  canvas: '自由画布',
-  steps: '步骤清单',
-  routes: '结果路径',
-}
-const initialNodes: FlowNode[] = [
-  { id: 'start', kind: 'start', name: '发起' },
-  { id: 'apply', kind: 'apply', name: '立项申请单', detail: '填写 / 修改' },
-  { id: 'minister', kind: 'approval', name: '部长审批', detail: '审批人启动时指定' },
-  { id: 'minister-result', kind: 'result', name: '审批结果', detail: '部长审批 · 通过 / 驳回' },
-  { id: 'managers', kind: 'countersign', name: '各部门经理会签', detail: '全员同意 · ALL' },
+const purposeLabels = { application: '申请填写', review: '审批' } as const
+const purposeDescriptions = {
+  application: '发起人填写或修改固定的立项申请单',
+  review: '按流程约定完成审批表决',
+} as const
+const paletteNodes: PaletteEntry[] = [
+  { kind: 'start', title: '开始', detail: '流程入口', icon: '始' },
+  {
+    kind: 'approval',
+    title: '申请填写',
+    detail: '填写或修改立项申请单',
+    icon: '表',
+    purpose: 'application',
+  },
+  { kind: 'approval', title: '审批', detail: '单人审批表决', icon: '审', purpose: 'review' },
+  { kind: 'condition', title: '条件分支', detail: '按审批结果分流', icon: '◇' },
+  { kind: 'countersign', title: '会签', detail: '所有人同意后通过', icon: '签' },
+  { kind: 'end', title: '结束', detail: '流程完成', icon: '终' },
+]
+
+const initialNodes: BusinessNode[] = [
+  {
+    id: 'start',
+    type: 'business',
+    position: { x: 250, y: 12 },
+    data: { kind: 'start', name: '发起' },
+  },
+  {
+    id: 'apply',
+    type: 'business',
+    position: { x: 250, y: 122 },
+    data: { kind: 'approval', name: '立项申请单', purpose: 'application' },
+  },
+  {
+    id: 'minister',
+    type: 'business',
+    position: { x: 250, y: 238 },
+    data: { kind: 'approval', name: '部长审批', purpose: 'review' },
+  },
+  {
+    id: 'minister-result',
+    type: 'business',
+    position: { x: 250, y: 354 },
+    data: { kind: 'condition', name: '部长审批结果' },
+  },
+  {
+    id: 'managers',
+    type: 'business',
+    position: { x: 548, y: 438 },
+    data: { kind: 'countersign', name: '各部门经理会签' },
+  },
   {
     id: 'manager-result',
-    kind: 'result',
-    name: '会签结果',
-    detail: '各部门经理会签 · 通过 / 驳回',
+    type: 'business',
+    position: { x: 250, y: 548 },
+    data: { kind: 'condition', name: '会签结果' },
   },
-  { id: 'end', kind: 'end', name: '审批完成' },
+  {
+    id: 'end',
+    type: 'business',
+    position: { x: 250, y: 658 },
+    data: { kind: 'end', name: '审批完成' },
+  },
 ]
-const initialEdges: FlowEdge[] = [
-  { id: 'e1', source: 'start', target: 'apply' },
-  { id: 'e2', source: 'apply', target: 'minister' },
-  { id: 'e3', source: 'minister', target: 'minister-result' },
-  { id: 'e4', source: 'minister-result', target: 'managers', branch: 'pass', label: '通过' },
-  { id: 'e5', source: 'minister-result', target: 'apply', branch: 'reject', label: '驳回' },
-  { id: 'e6', source: 'managers', target: 'manager-result' },
-  { id: 'e7', source: 'manager-result', target: 'end', branch: 'pass', label: '通过' },
-  { id: 'e8', source: 'manager-result', target: 'apply', branch: 'reject', label: '驳回' },
+
+const makeEdge = (
+  id: string,
+  source: string,
+  target: string,
+  branch: Branch = 'continue',
+): BusinessEdge => ({
+  id,
+  source,
+  target,
+  type: 'smoothstep',
+  data: { branch },
+  label: branch === 'pass' ? '通过' : branch === 'reject' ? '驳回，返回申请' : undefined,
+  style: { stroke: branch === 'reject' ? '#d58a78' : '#92aa9d', strokeWidth: 1.8 },
+  labelStyle: { fill: branch === 'reject' ? '#a85e4b' : '#527463', fontSize: 11 },
+  labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: branch === 'reject' ? '#d58a78' : '#92aa9d' },
+})
+const initialEdges: BusinessEdge[] = [
+  makeEdge('start-apply', 'start', 'apply'),
+  makeEdge('apply-minister', 'apply', 'minister'),
+  makeEdge('minister-result', 'minister', 'minister-result'),
+  makeEdge('result-managers', 'minister-result', 'managers', 'pass'),
+  makeEdge('result-apply', 'minister-result', 'apply', 'reject'),
+  makeEdge('managers-result', 'managers', 'manager-result'),
+  makeEdge('manager-result-end', 'manager-result', 'end', 'pass'),
+  makeEdge('manager-result-apply', 'manager-result', 'apply', 'reject'),
 ]
-const branchText = (value?: Branch) =>
-  value === 'pass'
-    ? '审批通过'
-    : value === 'reject'
-      ? '审批驳回'
-      : value === 'default'
-        ? '默认情况'
-        : value === 'condition'
-          ? '表单字段条件'
-          : '继续流转'
+const nodeTypes = { business: BusinessFlowNode }
+const displayNodeLabel = (node: BusinessNode) =>
+  node.data.purpose ? purposeLabels[node.data.purpose] : nodeLabels[node.data.kind]
+const displayNodeDescription = (node: BusinessNode) =>
+  node.data.purpose ? purposeDescriptions[node.data.purpose] : nodeDescriptions[node.data.kind]
 
-export function DesignerPrototype({
-  variant,
-  onVariantChange,
-}: {
-  variant: DesignerVariant
-  onVariantChange: (variant: DesignerVariant) => void
-}) {
-  const [nodes, setNodes] = useState(initialNodes)
-  const [edges, setEdges] = useState(initialEdges)
-  const [selectedId, setSelectedId] = useState('minister')
-  const [selectedEdgeId, setSelectedEdgeId] = useState('')
-  const [toast, setToast] = useState('')
-  const selected = nodes.find((node) => node.id === selectedId)
-  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId)
-  const updateName = (name: string) =>
-    selected &&
-    setNodes((all) => all.map((node) => (node.id === selected.id ? { ...node, name } : node)))
-  const selectNode = (id: string) => {
-    setSelectedId(id)
-    setSelectedEdgeId('')
-  }
-  const selectEdge = (id: string) => {
-    setSelectedEdgeId(id)
-    setSelectedId('')
-  }
-  const addNode = (kind: Kind) => {
-    if ((kind === 'start' || kind === 'end') && nodes.some((node) => node.kind === kind)) {
-      setToast('流程只需要一个' + labels[kind] + '节点。')
-      return
-    }
-    const id = kind + '-' + Date.now()
-    setNodes((all) => [
-      ...all,
-      {
-        id,
-        kind,
-        name: kind === 'approval' ? '新审批步骤' : kind === 'apply' ? '新申请步骤' : labels[kind],
-        detail: kind === 'countersign' ? '全员同意 · ALL' : undefined,
-      },
-    ])
-    selectNode(id)
-    setToast('已添加步骤，请连接并配置业务规则。')
-  }
-  const deleteSelected = () => {
-    if (!selected || selected.kind === 'start' || selected.kind === 'end') {
-      setToast('开始和结束节点不能删除。')
-      return
-    }
-    setNodes((all) => all.filter((node) => node.id !== selected.id))
-    setEdges((all) =>
-      all.filter((edge) => edge.source !== selected.id && edge.target !== selected.id),
-    )
-    selectNode('apply')
-    setToast('已删除步骤及相关路径。')
-  }
-  const updateBranch = (branch: Branch) =>
-    selectedEdge &&
-    setEdges((all) =>
-      all.map((edge) =>
-        edge.id === selectedEdge.id ? { ...edge, branch, label: branchText(branch) } : edge,
-      ),
-    )
-  const deleteEdge = () => {
-    if (!selectedEdge) return
-    setEdges((all) => all.filter((edge) => edge.id !== selectedEdge.id))
-    selectNode(selectedEdge.source)
-    setToast('已删除路径。')
-  }
-  const addPath = () => {
-    if (!selected) {
-      setToast('先选择一个步骤，再添加后续路径。')
-      return
-    }
-    const id = selected.id + '-path-' + Date.now()
-    setEdges((all) => [
-      ...all,
-      {
-        id,
-        source: selected.id,
-        target: 'end',
-        branch: selected.kind === 'result' ? 'reject' : 'default',
-        label: selected.kind === 'result' ? '审批驳回' : '默认情况',
-      },
-    ])
-    selectEdge(id)
-    setToast('已添加路径，请设置业务含义和去向。')
-  }
-  useEffect(() => {
-    const keys: DesignerVariant[] = ['canvas', 'steps', 'routes']
-    const onKey = (event: KeyboardEvent) => {
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest('input, textarea, select, [contenteditable]')
-      )
-        return
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        event.preventDefault()
-        const index = keys.indexOf(variant)
-        onVariantChange(keys[(index + (event.key === 'ArrowRight' ? 1 : 2)) % keys.length])
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [variant, onVariantChange])
-
-  const palette = <Palette onAdd={addNode} />
-  const updateTarget = (target: string) =>
-    selectedEdge &&
-    setEdges((all) => all.map((edge) => (edge.id === selectedEdge.id ? { ...edge, target } : edge)))
-  const inspector = (
-    <Inspector
-      selected={selected}
-      selectedEdge={selectedEdge}
-      nodes={nodes}
-      edges={edges}
-      onName={updateName}
-      onBranch={updateBranch}
-      onTarget={updateTarget}
-      onAddPath={addPath}
-      onDelete={deleteSelected}
-      onDeleteEdge={deleteEdge}
-      onSelectEdge={selectEdge}
-    />
-  )
+function BusinessFlowNode({ data, selected }: NodeProps<BusinessNode>) {
+  const icon = paletteNodes.find(
+    (item) => item.kind === data.kind && item.purpose === data.purpose,
+  )?.icon
   return (
-    <div className={styles.prototype}>
-      <header className={styles.header}>
-        <div>
-          <div className={styles.breadcrumb}>
-            流程设计 <span>/</span> 立项审批 <i>原型方案 {variant.toUpperCase()}</i>
-          </div>
-          <h1>
-            立项审批 <Tag>未发布</Tag>
-          </h1>
-          <p>
-            {variant === 'canvas'
-              ? '从空间关系理解整个流程，选中节点后在侧栏编辑业务属性。'
-              : variant === 'steps'
-                ? '沿业务步骤逐项配置，分支规则和节点属性在同一工作区内呈现。'
-                : '先看清通过与驳回会发生什么，再调整每条路径上的处理步骤。'}
-          </p>
-        </div>
-        <div className={styles.headerActions}>
-          <span className={styles.unsaved}>
-            <i /> 本页临时编辑
-          </span>
-          <Button
-            icon={<FileTextOutlined />}
-            onClick={() => setToast('原型：预览系统提供的立项申请表单')}
-          >
-            表单预览
-          </Button>
-          <Button onClick={() => setToast('原型：复制业务流程 JSON')}>导出 JSON</Button>
-          <Button type="primary" onClick={() => setToast('原型：调用预留的业务模型 JSON 转换接口')}>
-            转换流程
-          </Button>
-        </div>
-      </header>
-      <div className={styles.infoBar}>
-        <div className={styles.infoGlyph}>
-          <BranchesOutlined />
-        </div>
-        <div>
-          <b>立项审批流程</b>
-          <small>审批人由发起实例的调用方提供 · 流程变量由后端处理</small>
-        </div>
-        <div className={styles.stats}>
-          <b>{nodes.length}</b> 个步骤 <i /> <b>{edges.length}</b> 条路径 <i />{' '}
-          <span>
-            <CheckCircleFilled /> 草稿只在当前页面
-          </span>
-        </div>
-      </div>
-      {toast && (
-        <div className={styles.toast} onClick={() => setToast('')}>
-          <CheckCircleFilled /> {toast} <span>×</span>
-        </div>
+    <div
+      className={
+        styles.flowNode +
+        ' ' +
+        styles['node-' + data.kind] +
+        (data.purpose ? ' ' + styles['purpose-' + data.purpose] : '') +
+        (selected ? ' ' + styles.nodeSelected : '')
+      }
+    >
+      {data.kind !== 'start' && (
+        <Handle type="target" position={Position.Top} className={styles.handle} />
       )}
-      <main className={styles.workspace}>
-        {variant === 'canvas' && (
-          <>
-            {palette}
-            <Canvas
-              nodes={nodes}
-              edges={edges}
-              selectedId={selectedId}
-              selectedEdgeId={selectedEdgeId}
-              onNode={selectNode}
-              onEdge={selectEdge}
-            />
-            {inspector}
-          </>
-        )}
-        {variant === 'steps' && (
-          <>
-            <StepRail
-              nodes={nodes}
-              selectedId={selectedId}
-              onNode={selectNode}
-              onEdge={selectEdge}
-              onAdd={addNode}
-            />
-            <StepEditor
-              selected={selected}
-              selectedEdge={selectedEdge}
-              nodes={nodes}
-              edges={edges}
-              onName={updateName}
-              onEdge={selectEdge}
-              onBranch={updateBranch}
-              onTarget={updateTarget}
-              onDelete={deleteSelected}
-            />
-            <Notes />
-          </>
-        )}
-        {variant === 'routes' && (
-          <>
-            <Routes
-              nodes={nodes}
-              edges={edges}
-              selectedId={selectedId}
-              selectedEdgeId={selectedEdgeId}
-              onNode={selectNode}
-              onEdge={selectEdge}
-              onAdd={addNode}
-            />
-            {inspector}
-          </>
-        )}
-      </main>
-      <PrototypeSwitcher current={variant} onChange={onVariantChange} />
+      <span className={styles.nodeIcon}>{icon}</span>
+      <span className={styles.nodeCopy}>
+        <b>{data.name}</b>
+        <small>
+          {data.kind === 'countersign'
+            ? '全员同意 · ALL'
+            : data.purpose
+              ? purposeDescriptions[data.purpose]
+              : nodeDescriptions[data.kind]}
+        </small>
+      </span>
+      {data.kind === 'approval' && (
+        <span className={styles.nodeBadge}>
+          <UserOutlined /> 启动时指定
+        </span>
+      )}
+      {data.kind !== 'end' && (
+        <Handle type="source" position={Position.Bottom} className={styles.handle} />
+      )}
     </div>
   )
 }
 
-function Palette({ onAdd }: { onAdd: (kind: Kind) => void }) {
-  const entries: Array<[Kind, string, string]> = [
-    ['apply', '申请填写', '发起人填写或修改'],
-    ['approval', '审批', '单人表决'],
-    ['countersign', '会签', '全员同意规则'],
-    ['result', '审批结果', '通过 / 驳回'],
-    ['condition', '表单条件', '按字段值判断'],
-  ]
-  return (
-    <aside className={styles.palette}>
-      <div className={styles.panelTitle}>
-        <b>添加步骤</b>
-        <small>用业务动作组成流程</small>
-      </div>
-      {entries.map(([kind, title, detail]) => (
-        <button className={styles.paletteButton} key={kind} onClick={() => onAdd(kind)}>
-          <span className={styles['mark' + kind]}>{marks[kind]}</span>
-          <span>
-            <b>{title}</b>
-            <small>{detail}</small>
-          </span>
-          <PlusOutlined />
-        </button>
-      ))}
-      <div className={styles.formPreview}>
-        <div className={styles.panelTitle}>
-          <b>立项申请表单</b>
-          <small>由系统提供，只读</small>
-        </div>
-        <p>
-          项目名称 <i>必填</i>
-          <span>文本</span>
-        </p>
-        <p>
-          项目类型 <i>必填</i>
-          <span>单选</span>
-        </p>
-        <p>
-          计划金额 <i>必填</i>
-          <span>数字</span>
-        </p>
-        <button>
-          预览发起表单 <ArrowRightOutlined />
-        </button>
-      </div>
-    </aside>
-  )
-}
+function inspectFlow(nodes: BusinessNode[], edges: BusinessEdge[]): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  const starts = nodes.filter((node) => node.data.kind === 'start')
+  const ends = nodes.filter((node) => node.data.kind === 'end')
+  if (starts.length !== 1) issues.push({ message: '流程需要且只能有一个开始节点。' })
+  if (ends.length !== 1) issues.push({ message: '流程需要且只能有一个结束节点。' })
+  if (!nodes.some((node) => node.data.purpose === 'application'))
+    issues.push({ message: '流程中需要包含立项申请填写步骤。' })
 
-function NodeButton({
-  node,
-  selected,
-  onClick,
-}: {
-  node: FlowNode
-  selected: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      className={
-        styles.nodeButton +
-        ' ' +
-        styles['node' + node.kind] +
-        (selected ? ' ' + styles.nodeSelected : '')
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const outgoing = new Map<string, BusinessEdge[]>()
+  const incoming = new Map<string, BusinessEdge[]>()
+  const edgePairs = new Set<string>()
+  for (const edge of edges) {
+    const source = byId.get(edge.source)
+    const target = byId.get(edge.target)
+    if (!source || !target) {
+      issues.push({ message: '有连线指向已删除或不存在的节点。', edgeId: edge.id })
+      continue
+    }
+    if (edge.source === edge.target)
+      issues.push({ message: '节点不能连接到自身。', edgeId: edge.id })
+    const pair = edge.source + '->' + edge.target
+    if (edgePairs.has(pair))
+      issues.push({ message: '同一对节点之间存在重复连线。', edgeId: edge.id })
+    edgePairs.add(pair)
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge])
+    incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge])
+    if (source.data.kind === 'end')
+      issues.push({ message: '结束节点不能再连接后续步骤。', edgeId: edge.id })
+    if (target.data.kind === 'start')
+      issues.push({ message: '开始节点不能有流入连线。', edgeId: edge.id })
+  }
+  for (const node of nodes) {
+    if (!node.data.name.trim())
+      issues.push({
+        message: '请填写“' + nodeLabels[node.data.kind] + '”节点名称。',
+        nodeId: node.id,
+      })
+    const next = outgoing.get(node.id) || []
+    const previous = incoming.get(node.id) || []
+    if (node.data.kind !== 'end' && next.length === 0)
+      issues.push({ message: '“' + node.data.name + '”没有后续步骤。', nodeId: node.id })
+    if (node.data.kind !== 'start' && previous.length === 0)
+      issues.push({ message: '“' + node.data.name + '”没有上游步骤。', nodeId: node.id })
+    if (node.data.kind === 'condition') {
+      const priorKind = byId.get(previous[0]?.source || '')?.data.kind
+      if (previous.length !== 1 || !['approval', 'countersign'].includes(priorKind || ''))
+        issues.push({
+          message: '“' + node.data.name + '”应紧接在审批或会签节点之后。',
+          nodeId: node.id,
+        })
+      const pass = next.filter((edge) => edge.data?.branch === 'pass')
+      const reject = next.filter((edge) => edge.data?.branch === 'reject')
+      if (pass.length !== 1)
+        issues.push({
+          message: '“' + node.data.name + '”需要且只能有一条“通过”路径。',
+          nodeId: node.id,
+        })
+      if (reject.length !== 1)
+        issues.push({
+          message: '“' + node.data.name + '”需要且只能有一条“驳回”路径。',
+          nodeId: node.id,
+        })
+      if (reject.length === 1 && byId.get(reject[0].target)?.data.purpose !== 'application')
+        issues.push({
+          message: '“' + node.data.name + '”的驳回路径应返回申请填写步骤。',
+          edgeId: reject[0].id,
+        })
+    }
+    if (
+      node.data.kind === 'countersign' ||
+      (node.data.kind === 'approval' && node.data.purpose !== 'application')
+    ) {
+      if (next.length !== 1 || byId.get(next[0]?.target || '')?.data.kind !== 'condition')
+        issues.push({
+          message: '“' + node.data.name + '”后需要连接条件分支，用于配置通过和驳回去向。',
+          nodeId: node.id,
+        })
+    }
+  }
+  const start = starts[0]
+  if (start) {
+    const reachable = new Set<string>()
+    const queue = [start.id]
+    while (queue.length) {
+      const current = queue.shift()!
+      if (reachable.has(current)) continue
+      reachable.add(current)
+      for (const edge of outgoing.get(current) || []) queue.push(edge.target)
+    }
+    for (const node of nodes) {
+      if (!reachable.has(node.id))
+        issues.push({ message: '“' + node.data.name + '”从开始节点无法到达。', nodeId: node.id })
+    }
+    const canFinish = new Set(ends.map((node) => node.id))
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const edge of edges) {
+        if (canFinish.has(edge.target) && !canFinish.has(edge.source)) {
+          canFinish.add(edge.source)
+          changed = true
+        }
       }
-      onClick={onClick}
-    >
-      <span className={styles.nodeMark}>{marks[node.kind]}</span>
-      <span>
-        <b>{node.name}</b>
-        {node.detail && <small>{node.detail}</small>}
-      </span>
-      {node.kind === 'countersign' && <i className={styles.all}>ALL</i>}
-    </button>
+    }
+    for (const node of nodes) {
+      if (!canFinish.has(node.id))
+        issues.push({
+          message: '“' + node.data.name + '”之后没有通往结束节点的路径。',
+          nodeId: node.id,
+        })
+    }
+  }
+  return issues
+}
+
+export function DesignerPrototype() {
+  return (
+    <ReactFlowProvider>
+      <PrototypeEditor />
+    </ReactFlowProvider>
   )
 }
 
-function Canvas({
-  nodes,
-  edges,
-  selectedId,
-  selectedEdgeId,
-  onNode,
-  onEdge,
-}: {
-  nodes: FlowNode[]
-  edges: FlowEdge[]
-  selectedId: string
-  selectedEdgeId: string
-  onNode: (id: string) => void
-  onEdge: (id: string) => void
-}) {
+function PrototypeEditor() {
+  const [nodes, setNodes, onNodesChange] = useNodesState<BusinessNode>(initialNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<BusinessEdge>(initialEdges)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const [checkOpen, setCheckOpen] = useState(false)
+  const [hasChecked, setHasChecked] = useState(false)
+  const { screenToFlowPosition, fitView } = useReactFlow<BusinessNode, BusinessEdge>()
+  const issues = useMemo(() => inspectFlow(nodes, edges), [nodes, edges])
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId)
+  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId)
+  const clearSelection = () => {
+    setSelectedNodeId(null)
+    setSelectedEdgeId(null)
+  }
+  const selectNode = (id: string) => {
+    setSelectedNodeId(id)
+    setSelectedEdgeId(null)
+    setCheckOpen(false)
+  }
+  const selectEdge = (id: string) => {
+    setSelectedEdgeId(id)
+    setSelectedNodeId(null)
+    setCheckOpen(false)
+  }
+  const updateNodeName = (name: string) => {
+    if (!selectedNodeId) return
+    setHasChecked(false)
+    setNodes((current) =>
+      current.map((node) =>
+        node.id === selectedNodeId ? { ...node, data: { ...node.data, name } } : node,
+      ),
+    )
+  }
+  const addNode = useCallback(
+    (kind: NodeKind, position?: { x: number; y: number }, purpose?: 'application' | 'review') => {
+      if ((kind === 'start' || kind === 'end') && nodes.some((node) => node.data.kind === kind))
+        return
+      const id = kind + '-' + Math.random().toString(36).slice(2, 8)
+      const base = nodes[nodes.length - 1]?.position || { x: 250, y: 700 }
+      const node: BusinessNode = {
+        id,
+        type: 'business',
+        position: position || { x: base.x + 30, y: base.y + 112 },
+        data: {
+          kind,
+          name:
+            kind === 'approval'
+              ? purpose === 'application'
+                ? '立项申请单'
+                : '新审批步骤'
+              : nodeLabels[kind],
+          ...(kind === 'approval' ? { purpose: purpose || 'review' } : {}),
+        },
+      }
+      setNodes((current) => [...current, node])
+      setHasChecked(false)
+      selectNode(id)
+    },
+    [nodes, setNodes],
+  )
+  const onDragStart = (event: DragEvent<HTMLButtonElement>, entry: PaletteEntry) => {
+    event.dataTransfer.setData(
+      'application/workflow-node',
+      JSON.stringify({ kind: entry.kind, purpose: entry.purpose }),
+    )
+    event.dataTransfer.effectAllowed = 'move'
+  }
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const payload = event.dataTransfer.getData('application/workflow-node')
+    if (!payload) return
+    let entry: Pick<PaletteEntry, 'kind' | 'purpose'>
+    try {
+      entry = JSON.parse(payload) as Pick<PaletteEntry, 'kind' | 'purpose'>
+    } catch {
+      return
+    }
+    if (
+      !paletteNodes.some(
+        (candidate) => candidate.kind === entry.kind && candidate.purpose === entry.purpose,
+      )
+    )
+      return
+    addNode(entry.kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }), entry.purpose)
+  }
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) return
+      const source = nodes.find((node) => node.id === connection.source)
+      const sourceBranches = edges.filter((edge) => edge.source === connection.source)
+      const branch: Branch =
+        source?.data.kind === 'condition'
+          ? sourceBranches.some((edge) => edge.data?.branch === 'pass')
+            ? 'reject'
+            : 'pass'
+          : 'continue'
+      const edge = makeEdge(
+        'path-' + Math.random().toString(36).slice(2, 8),
+        connection.source,
+        connection.target,
+        branch,
+      )
+      setEdges((current) => addEdge(edge, current))
+      setSelectedEdgeId(edge.id)
+      setSelectedNodeId(null)
+      setCheckOpen(false)
+      setHasChecked(false)
+    },
+    [edges, nodes, setEdges],
+  )
+  const onReconnect = useCallback(
+    (oldEdge: BusinessEdge, connection: Connection) => {
+      if (!connection.source || !connection.target) return
+      setEdges((current) => reconnectEdge(oldEdge, connection, current))
+      setHasChecked(false)
+    },
+    [setEdges],
+  )
+  const updateEdgeBranch = (branch: Branch) => {
+    if (!selectedEdgeId) return
+    setHasChecked(false)
+    setEdges((current) =>
+      current.map((edge) =>
+        edge.id === selectedEdgeId ? makeEdge(edge.id, edge.source, edge.target, branch) : edge,
+      ),
+    )
+  }
+  const deleteNode = () => {
+    if (!selectedNode || selectedNode.data.kind === 'start' || selectedNode.data.kind === 'end')
+      return
+    setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+    setEdges((current) =>
+      current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
+    )
+    clearSelection()
+    setHasChecked(false)
+  }
+  const deleteEdge = () => {
+    if (!selectedEdgeId) return
+    setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId))
+    clearSelection()
+    setHasChecked(false)
+  }
+  const isValidConnection = useCallback(
+    (connection: Connection | BusinessEdge) => {
+      if (!connection.source || !connection.target || connection.source === connection.target)
+        return false
+      const source = nodes.find((node) => node.id === connection.source)
+      const target = nodes.find((node) => node.id === connection.target)
+      if (!source || !target || source.data.kind === 'end' || target.data.kind === 'start')
+        return false
+      return !edges.some(
+        (edge) => edge.source === connection.source && edge.target === connection.target,
+      )
+    },
+    [edges, nodes],
+  )
+  const reset = () => {
+    setNodes(initialNodes)
+    setEdges(initialEdges)
+    clearSelection()
+    setCheckOpen(false)
+    setHasChecked(false)
+  }
+  const openCheck = () => {
+    setHasChecked(true)
+    setCheckOpen(true)
+    clearSelection()
+  }
+
   return (
-    <section className={styles.canvas}>
-      <div className={styles.canvasHead}>
-        <div>
-          <b>流程画布</b>
-          <small>选择步骤或路径，在属性面板中编辑</small>
-        </div>
-        <div>
-          <button>−</button> 100% <button>＋</button>
-        </div>
-      </div>
-      <div className={styles.canvasArea}>
-        <div className={styles.flowRow}>
-          {nodes.map((node) => (
-            <NodeButton
-              key={node.id}
-              node={node}
-              selected={node.id === selectedId}
-              onClick={() => onNode(node.id)}
-            />
-          ))}
-        </div>
-        <div className={styles.canvasPaths}>
-          <div className={styles.panelTitle}>
-            <div>
-              <b>流程路径</b>
-              <small>按连接关系表达通过、驳回与后续步骤</small>
-            </div>
-            <span>{edges.length} 条</span>
+    <div className={styles.prototype}>
+      <header className={styles.header}>
+        <div className={styles.heading}>
+          <div className={styles.breadcrumb}>
+            流程设计 <span>/</span> 立项审批 <Tag color="gold">交互原型</Tag>
           </div>
-          {edges.map((edge) => (
-            <button
-              key={edge.id}
-              className={
-                styles.pathRow + (edge.id === selectedEdgeId ? ' ' + styles.activePath : '')
-              }
-              onClick={() => onEdge(edge.id)}
-            >
-              <span className={edge.branch === 'reject' ? styles.pathReject : styles.pathDot} />
-              <b>{nodes.find((node) => node.id === edge.source)?.name || '未命名'}</b>
-              <span className={styles.pathMeaning}>{edge.label || branchText(edge.branch)}</span>
-              <ArrowRightOutlined />
-              <b>{nodes.find((node) => node.id === edge.target)?.name || '未命名'}</b>
-            </button>
-          ))}
+          <h1>立项审批流程</h1>
+          <p>拖入业务节点、在画布上连接步骤，完成后检查流程结构。</p>
         </div>
-        <div className={styles.canvasFooter}>
-          <span>
-            <CheckCircleFilled /> 图形表达业务去向，技术变量由后端生成
+        <div className={styles.actions}>
+          <span className={styles.sessionNote}>
+            <i /> 编辑暂存在当前页面
           </span>
-          <span>后端负责发布前最终校验</span>
+          <Button icon={<ReloadOutlined />} onClick={reset}>
+            恢复示例
+          </Button>
+          <Button type="primary" icon={<CheckCircleFilled />} onClick={openCheck}>
+            检查流程
+          </Button>
         </div>
+      </header>
+      <div className={styles.flowSummary}>
+        <span className={styles.summaryIcon}>
+          <ApartmentOutlined />
+        </span>
+        <div className={styles.summaryCopy}>
+          <b>立项审批</b>
+          <small>审批人由实例发起方按已发布流程的字段说明提供 · 会签规则固定为全员同意</small>
+        </div>
+        <span className={styles.summaryStats}>
+          <b>{nodes.length}</b> 个节点 <i /> <b>{edges.length}</b> 条连线 <i />
+          {hasChecked ? (
+            issues.length ? (
+              <em className={styles.hasIssues}>
+                <ExclamationCircleOutlined /> {issues.length} 项待处理
+              </em>
+            ) : (
+              <em>
+                <CheckCircleFilled /> 检查通过
+              </em>
+            )
+          ) : (
+            <span>尚未检查</span>
+          )}
+        </span>
       </div>
-    </section>
-  )
-}
-
-function Inspector({
-  selected,
-  selectedEdge,
-  nodes,
-  edges,
-  onName,
-  onBranch,
-  onTarget,
-  onAddPath,
-  onDelete,
-  onDeleteEdge,
-  onSelectEdge,
-}: {
-  selected?: FlowNode
-  selectedEdge?: FlowEdge
-  nodes: FlowNode[]
-  edges: FlowEdge[]
-  onName: (name: string) => void
-  onBranch: (branch: Branch) => void
-  onTarget: (target: string) => void
-  onAddPath: () => void
-  onDelete: () => void
-  onDeleteEdge: () => void
-  onSelectEdge: (id: string) => void
-}) {
-  const outgoing = edges.filter((edge) => edge.source === selected?.id)
-  return (
-    <aside className={styles.inspector}>
-      <div className={styles.inspectorTitle}>
-        <div>
-          <small>{selectedEdge ? '路径属性' : '步骤属性'}</small>
-          <h2>{selectedEdge ? '设置流转规则' : selected?.name || '选择步骤或路径'}</h2>
-        </div>
-        <span>···</span>
-      </div>
-      {selected ? (
-        <>
-          <div className={styles.kindLine}>
-            <i className={styles['mark' + selected.kind]}>{marks[selected.kind]}</i>
-            {labels[selected.kind]}
-            {selected.kind === 'countersign' && <Tag color="purple">ALL</Tag>}
+      <main className={styles.workspace}>
+        <aside className={styles.palette}>
+          <div className={styles.panelHeading}>
+            <b>节点库</b>
+            <small>拖到画布中添加</small>
           </div>
-          <label>步骤名称</label>
-          <Input value={selected.name} onChange={(event) => onName(event.target.value)} />
-          {selected.kind === 'approval' && (
-            <div className={styles.hintBox}>
-              <UserOutlined />
+          <div className={styles.paletteGroupLabel}>流程步骤</div>
+          <div className={styles.paletteList}>
+            {paletteNodes.map((entry) => {
+              const singletonUsed =
+                (entry.kind === 'start' || entry.kind === 'end') &&
+                nodes.some((node) => node.data.kind === entry.kind)
+              return (
+                <button
+                  key={entry.purpose || entry.kind}
+                  type="button"
+                  draggable={!singletonUsed}
+                  disabled={singletonUsed}
+                  className={styles.paletteItem}
+                  onDragStart={(event) => onDragStart(event, entry)}
+                  onClick={() => addNode(entry.kind, undefined, entry.purpose)}
+                  title={
+                    singletonUsed
+                      ? '流程只需要一个' + entry.title + '节点'
+                      : '拖动或点击添加' + entry.title + '节点'
+                  }
+                >
+                  <span
+                    className={
+                      styles.paletteIcon +
+                      ' ' +
+                      styles['node-' + entry.kind] +
+                      (entry.purpose ? ' ' + styles['purpose-' + entry.purpose] : '')
+                    }
+                  >
+                    {entry.icon}
+                  </span>
+                  <span className={styles.paletteText}>
+                    <b>{entry.title}</b>
+                    <small>{entry.detail}</small>
+                  </span>
+                  <PlusOutlined className={styles.palettePlus} />
+                </button>
+              )
+            })}
+          </div>
+          <div className={styles.paletteHint}>
+            <DragOutlined />
+            <span>拖入画布后，可移动节点并从连接点拖出连线。</span>
+          </div>
+          <section className={styles.formCard}>
+            <div className={styles.formTitle}>
               <span>
-                <b>审批人启动时指定</b>
-                <small>设计流程时不选人，调用方启动实例时按后端字段说明提交。</small>
+                <FileTextOutlined />
               </span>
+              <div>
+                <b>立项申请表单</b>
+                <small>业务系统固定提供</small>
+              </div>
             </div>
-          )}
-          {selected.kind === 'countersign' && (
-            <div className={styles.hintBox}>
-              <CheckCircleFilled />
-              <span>
-                <b>会签 · ALL</b>
-                <small>所有人同意才通过；任一人驳回即结束会签。</small>
-              </span>
+            <div className={styles.fieldRow}>
+              项目名称 <i>必填</i>
+              <small>文本</small>
             </div>
-          )}
-          {selected.kind === 'apply' && (
-            <div className={styles.hintBox}>
-              <FileTextOutlined />
-              <span>
-                <b>发起人填写 / 修改</b>
-                <small>驳回后回到此步骤，重新提交后继续流转。</small>
-              </span>
+            <div className={styles.fieldRow}>
+              项目类型 <i>必填</i>
+              <small>单选</small>
             </div>
-          )}
-          {selected.kind === 'result' && (
-            <div className={styles.hintBox}>
-              <BranchesOutlined />
-              <span>
-                <b>结果由连线表达</b>
-                <small>后端按节点结构识别审批来源。</small>
-              </span>
+            <div className={styles.fieldRow}>
+              计划金额 <i>必填</i>
+              <small>数字</small>
             </div>
-          )}
-          <div className={styles.outgoing}>
-            <div className={styles.panelTitle}>
-              <b>
-                {selected.kind === 'result' || selected.kind === 'condition'
-                  ? '分支路径'
-                  : '后续路径'}
-              </b>
-              <Button size="small" icon={<PlusOutlined />} onClick={onAddPath}>
-                添加路径
-              </Button>
+            <div className={styles.formFoot}>
+              <InfoCircleOutlined /> 表单字段在此流程中只读
             </div>
-            {outgoing.map((edge) => (
-              <button key={edge.id} onClick={() => onSelectEdge(edge.id)}>
-                <i />
-                {edge.label || branchText(edge.branch)}
-                <span>→ {nodes.find((node) => node.id === edge.target)?.name}</span>
-                <ArrowRightOutlined />
-              </button>
-            ))}
-            {!outgoing.length && <p>还没有路径，可以从当前步骤添加一个。</p>}
+          </section>
+        </aside>
+        <section className={styles.canvasPanel}>
+          <div className={styles.canvasToolbar}>
+            <div>
+              <b>流程画布</b>
+              <small>拖动节点调整位置 · 拖连接点创建连线</small>
+            </div>
+            <Button size="small" onClick={() => void fitView({ padding: 0.16, duration: 250 })}>
+              适应画布
+            </Button>
           </div>
-          <div className={styles.deleteRow}>
-            <button onClick={onDelete}>删除步骤</button>
-            <small>未发布修改只在本页保留</small>
-          </div>
-        </>
-      ) : selectedEdge ? (
-        <>
-          <div className={styles.edgeNames}>
-            {nodes.find((node) => node.id === selectedEdge.source)?.name} <ArrowRightOutlined />{' '}
-            {nodes.find((node) => node.id === selectedEdge.target)?.name}
-          </div>
-          <label>业务路径</label>
-          <Select
-            value={selectedEdge.branch || 'condition'}
-            options={[
-              { value: 'pass', label: '审批通过' },
-              { value: 'reject', label: '审批驳回' },
-              { value: 'default', label: '默认情况' },
-              { value: 'condition', label: '表单字段条件' },
-            ]}
-            onChange={onBranch}
-          />
-          <label>流转到</label>
-          <Select
-            value={selectedEdge.target}
-            options={nodes
-              .filter((node) => node.id !== selectedEdge.source && node.kind !== 'start')
-              .map((node) => ({ value: node.id, label: node.name }))}
-            onChange={onTarget}
-          />
-          <div className={styles.hintBox}>
-            <BranchesOutlined />
-            <span>
-              <b>连接关系表达业务去向</b>
-              <small>不配置 Camunda 网关、EL 或变量名。</small>
-            </span>
-          </div>
-          <button className={styles.deletePath} onClick={onDeleteEdge}>
-            删除此路径
-          </button>
-        </>
-      ) : (
-        <div className={styles.empty}>
-          选择一个步骤或连线
-          <br />
-          这里会显示业务属性
-        </div>
-      )}
-    </aside>
-  )
-}
-
-function StepRail({
-  nodes,
-  selectedId,
-  onNode,
-  onEdge,
-  onAdd,
-}: {
-  nodes: FlowNode[]
-  selectedId: string
-  onNode: (id: string) => void
-  onEdge: (id: string) => void
-  onAdd: (kind: Kind) => void
-}) {
-  const order = [
-    'start',
-    'apply',
-    'minister',
-    'minister-result',
-    'managers',
-    'manager-result',
-    'end',
-  ]
-  return (
-    <aside className={styles.stepRail}>
-      <div className={styles.panelTitle}>
-        <div>
-          <b>流程步骤</b>
-          <small>按办理顺序查看</small>
-        </div>
-        <Button size="small" icon={<PlusOutlined />} onClick={() => onAdd('approval')}>
-          添加
-        </Button>
-      </div>
-      {order.map((id, index) => {
-        const node = nodes.find((item) => item.id === id)
-        if (!node) return null
-        return (
-          <div className={styles.stepSlot} key={id}>
-            <button
-              className={styles.stepItem + (selectedId === id ? ' ' + styles.activeStep : '')}
-              onClick={() => onNode(id)}
+          <div
+            className={styles.canvas}
+            onDrop={onDrop}
+            onDragOver={(event) => {
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+            }}
+          >
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={(changes) => {
+                onNodesChange(changes)
+                if (
+                  changes.some((change) => change.type === 'position' || change.type === 'remove')
+                )
+                  setHasChecked(false)
+              }}
+              onEdgesChange={(changes) => {
+                onEdgesChange(changes)
+                if (changes.some((change) => change.type === 'remove')) setHasChecked(false)
+              }}
+              onConnect={onConnect}
+              onReconnect={onReconnect}
+              edgesReconnectable
+              isValidConnection={isValidConnection}
+              onNodeClick={(_, node) => selectNode(node.id)}
+              onEdgeClick={(_, edge) => selectEdge(edge.id)}
+              onPaneClick={clearSelection}
+              fitView
+              fitViewOptions={{ padding: 0.16, maxZoom: 0.9, minZoom: 0.42 }}
+              minZoom={0.3}
+              maxZoom={1.5}
+              nodesConnectable
+              nodesDraggable
+              elementsSelectable
+              deleteKeyCode={null}
+              proOptions={{ hideAttribution: true }}
             >
-              <span>{String(index + 1).padStart(2, '0')}</span>
-              <i className={styles['mark' + node.kind]}>{marks[node.kind]}</i>
-              <b>{node.name}</b>
-              <small>{node.detail || labels[node.kind]}</small>
-            </button>
-            {id === 'minister-result' && (
-              <div className={styles.stepBranches}>
-                <button onClick={() => onEdge('e4')}>✓ 通过 → 各部门经理会签</button>
-                <button onClick={() => onEdge('e5')}>↶ 驳回 → 立项申请单</button>
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#dce7e1" />
+              <Controls position="bottom-left" showInteractive={false} />
+            </ReactFlow>
+            {nodes.length === 0 && (
+              <div className={styles.emptyCanvas}>
+                <ApartmentOutlined />
+                <b>从左侧添加第一个业务节点</b>
+                <span>拖动节点到画布，开始设计流程</span>
               </div>
             )}
           </div>
-        )
-      })}
-      <button className={styles.addStep} onClick={() => onAdd('apply')}>
-        <PlusOutlined /> 添加申请步骤
-      </button>
-      <div className={styles.returnNote}>
-        <b>驳回后返回申请人</b>
-        <small>重新提交后仍经过部长审批</small>
-      </div>
-    </aside>
-  )
-}
-
-function StepEditor({
-  selected,
-  selectedEdge,
-  nodes,
-  edges,
-  onName,
-  onEdge,
-  onBranch,
-  onTarget,
-  onDelete,
-}: {
-  selected?: FlowNode
-  selectedEdge?: FlowEdge
-  nodes: FlowNode[]
-  edges: FlowEdge[]
-  onName: (name: string) => void
-  onEdge: (id: string) => void
-  onBranch: (branch: Branch) => void
-  onTarget: (target: string) => void
-  onDelete: () => void
-}) {
-  const outgoing = edges.filter((edge) => edge.source === selected?.id)
-  return (
-    <section className={styles.stepEditor}>
-      <div className={styles.stepEditorHead}>
-        <small>步骤清单 / 属性编辑</small>
-        <b>业务设置</b>
-      </div>
-      {selectedEdge ? (
-        <>
-          <h2>设置流转规则</h2>
-          <p className={styles.edgeNames}>
-            {nodes.find((node) => node.id === selectedEdge.source)?.name} →{' '}
-            {nodes.find((node) => node.id === selectedEdge.target)?.name}
-          </p>
-          <label>业务路径</label>
-          <Select
-            value={selectedEdge.branch || 'condition'}
-            options={[
-              { value: 'pass', label: '审批通过' },
-              { value: 'reject', label: '审批驳回' },
-              { value: 'default', label: '默认情况' },
-              { value: 'condition', label: '表单字段条件' },
-            ]}
-            onChange={onBranch}
-          />
-          <label>流转到</label>
-          <Select
-            value={selectedEdge.target}
-            options={nodes
-              .filter((node) => node.id !== selectedEdge.source && node.kind !== 'start')
-              .map((node) => ({ value: node.id, label: node.name }))}
-            onChange={onTarget}
-          />
-          <div className={styles.largeHint}>
-            <b>连线表达业务去向</b>
-            <p>驳回回路需回到申请填写节点；发布时由后端校验完整流程。</p>
-          </div>
-        </>
-      ) : selected ? (
-        <>
-          <div className={styles.selectedStepHero}>
-            <i className={styles['mark' + selected.kind]}>{marks[selected.kind]}</i>
+        </section>
+        <aside className={styles.inspector}>
+          <div className={styles.inspectorHeader}>
             <div>
-              <small>{labels[selected.kind]}</small>
-              <h2>{selected.name}</h2>
+              <small>
+                {selectedEdge
+                  ? '连线属性'
+                  : selectedNode
+                    ? displayNodeLabel(selectedNode) + '节点'
+                    : checkOpen
+                      ? '流程检查'
+                      : '流程属性'}
+              </small>
+              <h2>
+                {selectedEdge
+                  ? '设置路径含义'
+                  : selectedNode
+                    ? selectedNode.data.name
+                    : checkOpen
+                      ? '检查结果'
+                      : '立项审批'}
+              </h2>
             </div>
-            {selected.kind === 'countersign' && <Tag color="purple">ALL</Tag>}
-          </div>
-          <label>步骤名称</label>
-          <Input value={selected.name} onChange={(event) => onName(event.target.value)} />
-          <div className={styles.largeHint}>
-            <b>
-              {selected.kind === 'approval'
-                ? '审批人稍后指定'
-                : selected.kind === 'apply'
-                  ? '发起人填写 / 修改'
-                  : selected.kind === 'result'
-                    ? '通过 / 驳回由流程连接表达'
-                    : selected.kind === 'countersign'
-                      ? '全员同意规则固定'
-                      : labels[selected.kind]}
-            </b>
-            <p>
-              {selected.kind === 'approval'
-                ? '流程设计不配置人员。启动实例时，调用方按后端返回的字段描述提交审批人标识。'
-                : selected.kind === 'apply'
-                  ? '首次启动填写申请；被驳回后回到这里修改并重新提交。'
-                  : selected.kind === 'countersign'
-                    ? '任一人驳回即结束会签并取消剩余任务。'
-                    : '业务模型转换后由后端识别并执行。'}
-            </p>
-          </div>
-          <div className={styles.editorPaths}>
-            <div className={styles.panelTitle}>
-              <b>后续路径</b>
-              <small>选中路径可修改业务含义</small>
-            </div>
-            {outgoing.length ? (
-              outgoing.map((edge) => (
-                <button key={edge.id} onClick={() => onEdge(edge.id)}>
-                  {edge.label || '继续'} <span>→</span>
-                </button>
-              ))
-            ) : (
-              <p>还没有后续路径。</p>
+            {(selectedNode || selectedEdge || checkOpen) && (
+              <button
+                className={styles.closePanel}
+                aria-label="关闭属性面板"
+                onClick={() => {
+                  clearSelection()
+                  setCheckOpen(false)
+                }}
+              >
+                <CloseOutlined />
+              </button>
             )}
           </div>
-          <button className={styles.removeStep} onClick={onDelete}>
-            删除此步骤
-          </button>
-        </>
-      ) : (
-        <div className={styles.empty}>选择左侧步骤以编辑属性</div>
-      )}
-    </section>
+          {selectedNode ? (
+            <NodeProperties node={selectedNode} onName={updateNodeName} onDelete={deleteNode} />
+          ) : selectedEdge ? (
+            <EdgeProperties
+              edge={selectedEdge}
+              source={nodes.find((node) => node.id === selectedEdge.source)}
+              target={nodes.find((node) => node.id === selectedEdge.target)}
+              onBranch={updateEdgeBranch}
+              onDelete={deleteEdge}
+            />
+          ) : checkOpen ? (
+            <CheckResults
+              issues={issues}
+              onSelect={(issue) =>
+                issue.nodeId
+                  ? selectNode(issue.nodeId)
+                  : issue.edgeId
+                    ? selectEdge(issue.edgeId)
+                    : undefined
+              }
+            />
+          ) : (
+            <FlowProperties onCheck={openCheck} />
+          )}
+        </aside>
+      </main>
+      <footer className={styles.footer}>
+        <span>
+          <InfoCircleOutlined /> 业务流程原型 · 不保存草稿，不涉及审批人员配置或流程引擎变量
+        </span>
+        <span>
+          <b>{nodes.length}</b> 个节点 <i /> <b>{edges.length}</b> 条连线
+        </span>
+      </footer>
+    </div>
   )
 }
 
-function Notes() {
-  return (
-    <aside className={styles.notes}>
-      <div className={styles.noteCard}>
-        <UserOutlined />
-        <b>审批人启动时指定</b>
-        <p>后端根据发布流程返回字段描述，调用方提交人员标识。</p>
-      </div>
-      <div className={styles.noteCard}>
-        <BranchesOutlined />
-        <b>结果分支自动识别</b>
-        <p>审批节点连接通过 / 驳回结果后，后端识别其表决含义。</p>
-      </div>
-      <div className={styles.noteCard}>
-        <CheckCircleFilled />
-        <b>发布前检查</b>
-        <p>前端即时提示，后端发布校验是最终依据。</p>
-      </div>
-    </aside>
-  )
-}
-
-function Routes({
-  nodes,
-  edges,
-  selectedId,
-  selectedEdgeId,
-  onNode,
-  onEdge,
-  onAdd,
+function NodeProperties({
+  node,
+  onName,
+  onDelete,
 }: {
-  nodes: FlowNode[]
-  edges: FlowEdge[]
-  selectedId: string
-  selectedEdgeId: string
-  onNode: (id: string) => void
-  onEdge: (id: string) => void
-  onAdd: (kind: Kind) => void
+  node: BusinessNode
+  onName: (name: string) => void
+  onDelete: () => void
 }) {
-  const node = (id: string) => nodes.find((item) => item.id === id)!
-  const extraApprovals = nodes.filter((item) => item.kind === 'approval' && item.id !== 'minister')
-  const targetName = (edgeId: string) =>
-    nodes.find((item) => item.id === edges.find((edge) => edge.id === edgeId)?.target)?.name ||
-    '未设置去向'
+  const { kind } = node.data
   return (
-    <section className={styles.routes}>
-      <div className={styles.routesIntro}>
+    <div className={styles.propertyBody}>
+      <div
+        className={
+          styles.propertyKind +
+          ' ' +
+          styles['node-' + kind] +
+          (node.data.purpose ? ' ' + styles['purpose-' + node.data.purpose] : '')
+        }
+      >
+        <span>
+          {
+            paletteNodes.find((item) => item.kind === kind && item.purpose === node.data.purpose)
+              ?.icon
+          }
+        </span>
         <div>
-          <small>流程结构 / 结果路径</small>
-          <h2>先定义结论，再安排后续步骤</h2>
-          <p>审批结论由流程连线表示。驳回回到申请人修改，重新提交后再次经过部长审批。</p>
+          <b>{displayNodeLabel(node)}</b>
+          <small>{displayNodeDescription(node)}</small>
         </div>
-        <Button icon={<PlusOutlined />} onClick={() => onAdd('approval')}>
-          添加审批步骤
+      </div>
+      <label className={styles.fieldLabel} htmlFor="node-name">
+        节点名称
+      </label>
+      <Input
+        id="node-name"
+        value={node.data.name}
+        maxLength={40}
+        onChange={(event) => onName(event.target.value)}
+      />
+      {kind === 'approval' && (
+        <div className={styles.infoCard}>
+          <UserOutlined />
+          <div>
+            <b>审批人在发起时提供</b>
+            <small>流程设计时不配置人员。实例发起方按已发布流程返回的字段说明提交人员标识。</small>
+          </div>
+        </div>
+      )}
+      {kind === 'countersign' && (
+        <div className={styles.infoCard}>
+          <CheckCircleFilled />
+          <div>
+            <b>会签方式：全员同意</b>
+            <small>所有会签参与人同意后通过；驳回路径返回申请填写步骤。</small>
+          </div>
+        </div>
+      )}
+      {node.data.purpose === 'application' && (
+        <div className={styles.infoCard}>
+          <FileTextOutlined />
+          <div>
+            <b>使用固定的立项申请表单</b>
+            <small>被驳回后，发起人回到此步骤修改并重新提交。</small>
+          </div>
+        </div>
+      )}
+      {kind === 'condition' && (
+        <div className={styles.infoCard}>
+          <ApartmentOutlined />
+          <div>
+            <b>依据上一步的审批结果分流</b>
+            <small>连接“通过”和“驳回”两条路径，再选中连线设置路径含义。</small>
+          </div>
+        </div>
+      )}
+      {(kind === 'start' || kind === 'end') && (
+        <Alert
+          type="info"
+          showIcon
+          message={kind === 'start' ? '开始节点是流程入口。' : '结束节点是流程完成出口。'}
+        />
+      )}
+      <div className={styles.propertyDivider} />
+      <div className={styles.connectionMeta}>
+        <span>节点类型</span>
+        <b>{nodeLabels[kind]}</b>
+      </div>
+      <div className={styles.connectionMeta}>
+        <span>节点标识</span>
+        <code>{node.id}</code>
+      </div>
+      <div className={styles.propertyActions}>
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          disabled={kind === 'start' || kind === 'end'}
+          onClick={onDelete}
+        >
+          删除节点
+        </Button>
+        <small>删除后，与此节点相连的路径也会移除</small>
+      </div>
+    </div>
+  )
+}
+
+function EdgeProperties({
+  edge,
+  source,
+  target,
+  onBranch,
+  onDelete,
+}: {
+  edge: BusinessEdge
+  source?: BusinessNode
+  target?: BusinessNode
+  onBranch: (branch: Branch) => void
+  onDelete: () => void
+}) {
+  const isDecision = source?.data.kind === 'condition'
+  return (
+    <div className={styles.propertyBody}>
+      <div className={styles.routePreview}>
+        <span>{source?.data.name || '未命名'}</span>
+        <i>→</i>
+        <span>{target?.data.name || '未命名'}</span>
+      </div>
+      <label className={styles.fieldLabel}>路径含义</label>
+      {isDecision ? (
+        <Select
+          value={edge.data?.branch || 'continue'}
+          onChange={onBranch}
+          options={[
+            { value: 'pass', label: '审批通过' },
+            { value: 'reject', label: '审批驳回' },
+            { value: 'continue', label: '继续流转' },
+          ]}
+        />
+      ) : (
+        <div className={styles.fixedRoute}>
+          <CheckCircleFilled /> 普通流转
+        </div>
+      )}
+      {isDecision && edge.data?.branch === 'reject' && (
+        <div className={styles.infoCard}>
+          <InfoCircleOutlined />
+          <div>
+            <b>驳回后返回申请步骤</b>
+            <small>发起人修改申请并重新提交后，流程继续向下审批。</small>
+          </div>
+        </div>
+      )}
+      <div className={styles.propertyDivider} />
+      <div className={styles.connectionMeta}>
+        <span>起点</span>
+        <b>{source?.data.name || '节点不存在'}</b>
+      </div>
+      <div className={styles.connectionMeta}>
+        <span>终点</span>
+        <b>{target?.data.name || '节点不存在'}</b>
+      </div>
+      <div className={styles.propertyActions}>
+        <Button danger icon={<DeleteOutlined />} onClick={onDelete}>
+          删除连线
+        </Button>
+        <small>也可以在画布中选中连线后删除</small>
+      </div>
+    </div>
+  )
+}
+
+function FlowProperties({ onCheck }: { onCheck: () => void }) {
+  return (
+    <div className={styles.propertyBody}>
+      <div className={styles.flowNameCard}>
+        <span>
+          <ApartmentOutlined />
+        </span>
+        <div>
+          <b>立项审批流程</b>
+          <small>当前流程使用立项申请单</small>
+        </div>
+      </div>
+      <div className={styles.metaSection}>
+        <b>设计约定</b>
+        <div className={styles.metaRow}>
+          <span>审批人员</span>
+          <b>实例发起时提供</b>
+        </div>
+        <div className={styles.metaRow}>
+          <span>会签规则</span>
+          <b>全员同意</b>
+        </div>
+        <div className={styles.metaRow}>
+          <span>驳回去向</span>
+          <b>返回申请填写</b>
+        </div>
+        <div className={styles.metaRow}>
+          <span>流程表单</span>
+          <b>系统固定提供</b>
+        </div>
+      </div>
+      <div className={styles.infoCard}>
+        <InfoCircleOutlined />
+        <div>
+          <b>从左侧拖节点到画布</b>
+          <small>
+            点击节点可以修改名称。拖动连接点即可建立路径，选中路径后可设置通过或驳回含义。
+          </small>
+        </div>
+      </div>
+      <div className={styles.checkCallout}>
+        <b>流程绘制完成后</b>
+        <span>检查开始和结束节点、审批分支、路径连接及流程可达性。</span>
+        <Button type="primary" block onClick={onCheck}>
+          检查流程
         </Button>
       </div>
-      <div className={styles.routeStart}>
-        <span className={styles.stepNumber}>01</span>
-        <NodeButton
-          node={node('start')}
-          selected={selectedId === 'start'}
-          onClick={() => onNode('start')}
-        />
-        <span className={styles.routeArrow} />
-        <span className={styles.stepNumber}>02</span>
-        <NodeButton
-          node={node('apply')}
-          selected={selectedId === 'apply'}
-          onClick={() => onNode('apply')}
-        />
-        <span className={styles.routeArrow} />
-        <span className={styles.stepNumber}>03</span>
-        <NodeButton
-          node={node('minister')}
-          selected={selectedId === 'minister'}
-          onClick={() => onNode('minister')}
-        />
-        <span className={styles.forkLabel}>
-          <BranchesOutlined /> 部长审批结果
-        </span>
-      </div>
-      <div className={styles.outcomes}>
-        <section className={styles.passOutcome}>
-          <button className={styles.outcomeTitle} onClick={() => onEdge('e4')}>
-            <CheckOutlined />
-            <span>
-              <b>通过</b>
-              <small>继续下一审批步骤</small>
-            </span>
-            <i>{selectedEdgeId === 'e4' ? '编辑中' : '编辑路径'} →</i>
-          </button>
-          <div className={styles.outcomeContent}>
-            <span className={styles.stepNumber}>04</span>
-            <NodeButton
-              node={node('managers')}
-              selected={selectedId === 'managers'}
-              onClick={() => onNode('managers')}
-            />
-            {extraApprovals
-              .filter((item) => item.id !== 'managers')
-              .map((item) => (
-                <NodeButton
-                  key={item.id}
-                  node={item}
-                  selected={selectedId === item.id}
-                  onClick={() => onNode(item.id)}
-                />
-              ))}
-            <div className={styles.secondFork}>会签结果</div>
-            <div className={styles.subOutcome}>
-              <button onClick={() => onEdge('e7')}>✓ 通过 → {targetName('e7')}</button>
-              <button onClick={() => onEdge('e8')}>↶ 驳回 → {targetName('e8')}</button>
-            </div>
-            <NodeButton
-              node={node('end')}
-              selected={selectedId === 'end'}
-              onClick={() => onNode('end')}
-            />
-          </div>
-        </section>
-        <section className={styles.rejectOutcome}>
-          <button className={styles.outcomeTitle} onClick={() => onEdge('e5')}>
-            <ArrowLeftOutlined />
-            <span>
-              <b>驳回</b>
-              <small>返回申请人修改</small>
-            </span>
-            <i>{selectedEdgeId === 'e5' ? '编辑中' : '编辑路径'} →</i>
-          </button>
-          <div className={styles.rejectContent}>
-            <div>
-              <b>{targetName('e5')}</b>
-              <small>重新提交后再次经过部长审批</small>
-            </div>
-            <span className={styles.returnArrow}>↶</span>
-          </div>
-        </section>
-      </div>
-      <div className={styles.routesNote}>
-        <CheckCircleFilled /> 会签规则固定为 ALL：任一人驳回即结束会签并取消剩余待办
-      </div>
-    </section>
+    </div>
   )
 }
 
-function PrototypeSwitcher({
-  current,
-  onChange,
+function CheckResults({
+  issues,
+  onSelect,
 }: {
-  current: DesignerVariant
-  onChange: (variant: DesignerVariant) => void
+  issues: ValidationIssue[]
+  onSelect: (issue: ValidationIssue) => void
 }) {
-  const options: DesignerVariant[] = ['canvas', 'steps', 'routes']
-  const index = options.indexOf(current)
+  if (!issues.length)
+    return (
+      <div className={styles.checkSuccess}>
+        <CheckCircleFilled />
+        <h3>流程检查通过</h3>
+        <p>节点和连线结构完整，所有步骤都能从开始节点到达，并且存在通往结束节点的路径。</p>
+        <Tag color="success">可以进入下一步</Tag>
+      </div>
+    )
   return (
-    <nav className={styles.switcher}>
-      <button aria-label="上一方案" onClick={() => onChange(options[(index + 2) % 3])}>
-        <ArrowLeftOutlined />
-      </button>
-      <span>
-        <b>{String.fromCharCode(65 + index)}</b>
-        <i />
-        {names[current]}
-      </span>
-      <button aria-label="下一方案" onClick={() => onChange(options[(index + 1) % 3])}>
-        <ArrowRightOutlined />
-      </button>
-    </nav>
+    <div className={styles.checkBody}>
+      <Alert
+        type="warning"
+        showIcon
+        message={'发现 ' + issues.length + ' 项需要处理'}
+        description="点击检查项可定位到对应节点或连线。"
+      />
+      <div className={styles.issueList}>
+        {issues.map((issue, index) => (
+          <button
+            key={(issue.nodeId || issue.edgeId || 'flow') + '-' + index}
+            onClick={() => onSelect(issue)}
+          >
+            <ExclamationCircleOutlined />
+            <span>{issue.message}</span>
+            <i>查看</i>
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
