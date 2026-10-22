@@ -23,6 +23,7 @@ import {
   EyeOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
+import { useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -56,6 +57,7 @@ import {
   type ApprovalOperator,
 } from './approvalModel'
 import styles from './DesignerPage.module.less'
+import { DesignerPrototype, type DesignerVariant } from './DesignerPrototype'
 import '@xyflow/react/dist/style.css'
 
 type PositionMap = Record<string, { x: number; y: number }>
@@ -458,6 +460,30 @@ function ModelExport({
 }
 
 export function DesignerPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedVariant = searchParams.get('variant') as DesignerVariant | null
+  const variant: DesignerVariant | null =
+    requestedVariant === 'canvas' || requestedVariant === 'steps' || requestedVariant === 'routes'
+      ? requestedVariant
+      : null
+
+  if (import.meta.env.DEV && variant) {
+    return (
+      <DesignerPrototype
+        variant={variant}
+        onVariantChange={(nextVariant) => {
+          const next = new URLSearchParams(searchParams)
+          next.set('variant', nextVariant)
+          setSearchParams(next, { replace: true })
+        }}
+      />
+    )
+  }
+
+  return <ProductionDesignerPage />
+}
+
+function ProductionDesignerPage() {
   const [model, setModel] = useState(createInitialApprovalModel)
   const [positions, setPositions] = useState<PositionMap>(initialPositions)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
