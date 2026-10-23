@@ -2,7 +2,7 @@
  * Throwaway UI prototype for the business-first approval flow designer.
  * The existing /designer route mounts it only in development with ?variant=canvas.
  */
-import { useCallback, useMemo, useState, type DragEvent } from 'react'
+import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   addEdge,
   Background,
@@ -17,9 +17,9 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
-  type Connection,
   type Edge,
   type Node,
+  type Connection,
   type NodeProps,
 } from '@xyflow/react'
 import {
@@ -27,6 +27,7 @@ import {
   CheckCircleFilled,
   CloseOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   DragOutlined,
   ExclamationCircleOutlined,
   FileTextOutlined,
@@ -34,24 +35,44 @@ import {
   PlusOutlined,
   ReloadOutlined,
   UserOutlined,
+  CloudUploadOutlined,
+  CodeOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Input, Select, Tag } from 'antd'
+import { Alert, Button, Input, Modal, Select, Tag, message } from 'antd'
+import type { TaskTemplate } from '@/api/workflow'
+import { businessWorkflowGateway } from '@/api/workflow'
+import { compileProjectApprovalModel } from '@/api/bpmn'
 import styles from './DesignerPrototype.module.less'
+import {
+  toProjectApprovalModel,
+  inferApplicationNodeId,
+  validateProjectApprovalFlow,
+  type ProjectBranch,
+  type ProjectNodeKind,
+  type ProjectValidationIssue,
+} from './projectApprovalModel'
+import {
+  assertDeploymentResult,
+  getTemplateStartVariables,
+  isDeploymentUncertain,
+} from './templateDeployment'
 
-type NodeKind = 'start' | 'approval' | 'condition' | 'countersign' | 'end'
-type Branch = 'continue' | 'pass' | 'reject'
-type NodeData = { kind: NodeKind; name: string; purpose?: 'application' | 'review' }
+type NodeKind = ProjectNodeKind
+type Branch = ProjectBranch
+type NodeData = { kind: NodeKind; name: string; isApplication?: boolean }
 type EdgeData = { branch: Branch }
+type PalettePurpose = 'application' | 'review'
 type PaletteEntry = {
   kind: NodeKind
   title: string
   detail: string
   icon: string
-  purpose?: 'application' | 'review'
+  purpose?: PalettePurpose
 }
 type BusinessNode = Node<NodeData, 'business'>
 type BusinessEdge = Edge<EdgeData>
-type ValidationIssue = { message: string; nodeId?: string; edgeId?: string }
+type ValidationIssue = ProjectValidationIssue
 
 const nodeLabels: Record<NodeKind, string> = {
   start: '开始',
@@ -98,13 +119,13 @@ const initialNodes: BusinessNode[] = [
     id: 'apply',
     type: 'business',
     position: { x: 250, y: 122 },
-    data: { kind: 'approval', name: '立项申请单', purpose: 'application' },
+    data: { kind: 'approval', name: '立项申请单' },
   },
   {
     id: 'minister',
     type: 'business',
     position: { x: 250, y: 238 },
-    data: { kind: 'approval', name: '部长审批', purpose: 'review' },
+    data: { kind: 'approval', name: '部长审批' },
   },
   {
     id: 'minister-result',
@@ -161,21 +182,29 @@ const initialEdges: BusinessEdge[] = [
 ]
 const nodeTypes = { business: BusinessFlowNode }
 const displayNodeLabel = (node: BusinessNode) =>
-  node.data.purpose ? purposeLabels[node.data.purpose] : nodeLabels[node.data.kind]
+  node.data.kind === 'approval' && node.data.isApplication
+    ? purposeLabels.application
+    : nodeLabels[node.data.kind]
 const displayNodeDescription = (node: BusinessNode) =>
-  node.data.purpose ? purposeDescriptions[node.data.purpose] : nodeDescriptions[node.data.kind]
+  node.data.kind === 'approval' && node.data.isApplication
+    ? purposeDescriptions.application
+    : nodeDescriptions[node.data.kind]
 
-function BusinessFlowNode({ data, selected }: NodeProps<BusinessNode>) {
+function BusinessFlowNode({ data, id, selected }: NodeProps<BusinessNode>) {
   const icon = paletteNodes.find(
-    (item) => item.kind === data.kind && item.purpose === data.purpose,
+    (item) =>
+      item.kind === data.kind &&
+      (data.kind !== 'approval' ||
+        item.purpose === (data.isApplication ? 'application' : 'review')),
   )?.icon
+  const isApplication = data.kind === 'approval' && data.isApplication === true
   return (
     <div
       className={
         styles.flowNode +
         ' ' +
         styles['node-' + data.kind] +
-        (data.purpose ? ' ' + styles['purpose-' + data.purpose] : '') +
+        (isApplication ? ' ' + styles['purpose-application'] : '') +
         (selected ? ' ' + styles.nodeSelected : '')
       }
     >
@@ -188,12 +217,10 @@ function BusinessFlowNode({ data, selected }: NodeProps<BusinessNode>) {
         <small>
           {data.kind === 'countersign'
             ? '全员同意 · ALL'
-            : data.purpose
-              ? purposeDescriptions[data.purpose]
-              : nodeDescriptions[data.kind]}
+            : displayNodeDescription({ id, type: 'business', position: { x: 0, y: 0 }, data })}
         </small>
       </span>
-      {data.kind === 'approval' && (
+      {data.kind === 'approval' && !isApplication && (
         <span className={styles.nodeBadge}>
           <UserOutlined /> 启动时指定
         </span>
@@ -203,123 +230,6 @@ function BusinessFlowNode({ data, selected }: NodeProps<BusinessNode>) {
       )}
     </div>
   )
-}
-
-function inspectFlow(nodes: BusinessNode[], edges: BusinessEdge[]): ValidationIssue[] {
-  const issues: ValidationIssue[] = []
-  const starts = nodes.filter((node) => node.data.kind === 'start')
-  const ends = nodes.filter((node) => node.data.kind === 'end')
-  if (starts.length !== 1) issues.push({ message: '流程需要且只能有一个开始节点。' })
-  if (ends.length !== 1) issues.push({ message: '流程需要且只能有一个结束节点。' })
-  if (!nodes.some((node) => node.data.purpose === 'application'))
-    issues.push({ message: '流程中需要包含立项申请填写步骤。' })
-
-  const byId = new Map(nodes.map((node) => [node.id, node]))
-  const outgoing = new Map<string, BusinessEdge[]>()
-  const incoming = new Map<string, BusinessEdge[]>()
-  const edgePairs = new Set<string>()
-  for (const edge of edges) {
-    const source = byId.get(edge.source)
-    const target = byId.get(edge.target)
-    if (!source || !target) {
-      issues.push({ message: '有连线指向已删除或不存在的节点。', edgeId: edge.id })
-      continue
-    }
-    if (edge.source === edge.target)
-      issues.push({ message: '节点不能连接到自身。', edgeId: edge.id })
-    const pair = edge.source + '->' + edge.target
-    if (edgePairs.has(pair))
-      issues.push({ message: '同一对节点之间存在重复连线。', edgeId: edge.id })
-    edgePairs.add(pair)
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge])
-    incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge])
-    if (source.data.kind === 'end')
-      issues.push({ message: '结束节点不能再连接后续步骤。', edgeId: edge.id })
-    if (target.data.kind === 'start')
-      issues.push({ message: '开始节点不能有流入连线。', edgeId: edge.id })
-  }
-  for (const node of nodes) {
-    if (!node.data.name.trim())
-      issues.push({
-        message: '请填写“' + nodeLabels[node.data.kind] + '”节点名称。',
-        nodeId: node.id,
-      })
-    const next = outgoing.get(node.id) || []
-    const previous = incoming.get(node.id) || []
-    if (node.data.kind !== 'end' && next.length === 0)
-      issues.push({ message: '“' + node.data.name + '”没有后续步骤。', nodeId: node.id })
-    if (node.data.kind !== 'start' && previous.length === 0)
-      issues.push({ message: '“' + node.data.name + '”没有上游步骤。', nodeId: node.id })
-    if (node.data.kind === 'condition') {
-      const priorKind = byId.get(previous[0]?.source || '')?.data.kind
-      if (previous.length !== 1 || !['approval', 'countersign'].includes(priorKind || ''))
-        issues.push({
-          message: '“' + node.data.name + '”应紧接在审批或会签节点之后。',
-          nodeId: node.id,
-        })
-      const pass = next.filter((edge) => edge.data?.branch === 'pass')
-      const reject = next.filter((edge) => edge.data?.branch === 'reject')
-      if (pass.length !== 1)
-        issues.push({
-          message: '“' + node.data.name + '”需要且只能有一条“通过”路径。',
-          nodeId: node.id,
-        })
-      if (reject.length !== 1)
-        issues.push({
-          message: '“' + node.data.name + '”需要且只能有一条“驳回”路径。',
-          nodeId: node.id,
-        })
-      if (reject.length === 1 && byId.get(reject[0].target)?.data.purpose !== 'application')
-        issues.push({
-          message: '“' + node.data.name + '”的驳回路径应返回申请填写步骤。',
-          edgeId: reject[0].id,
-        })
-    }
-    if (
-      node.data.kind === 'countersign' ||
-      (node.data.kind === 'approval' && node.data.purpose !== 'application')
-    ) {
-      if (next.length !== 1 || byId.get(next[0]?.target || '')?.data.kind !== 'condition')
-        issues.push({
-          message: '“' + node.data.name + '”后需要连接条件分支，用于配置通过和驳回去向。',
-          nodeId: node.id,
-        })
-    }
-  }
-  const start = starts[0]
-  if (start) {
-    const reachable = new Set<string>()
-    const queue = [start.id]
-    while (queue.length) {
-      const current = queue.shift()!
-      if (reachable.has(current)) continue
-      reachable.add(current)
-      for (const edge of outgoing.get(current) || []) queue.push(edge.target)
-    }
-    for (const node of nodes) {
-      if (!reachable.has(node.id))
-        issues.push({ message: '“' + node.data.name + '”从开始节点无法到达。', nodeId: node.id })
-    }
-    const canFinish = new Set(ends.map((node) => node.id))
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const edge of edges) {
-        if (canFinish.has(edge.target) && !canFinish.has(edge.source)) {
-          canFinish.add(edge.source)
-          changed = true
-        }
-      }
-    }
-    for (const node of nodes) {
-      if (!canFinish.has(node.id))
-        issues.push({
-          message: '“' + node.data.name + '”之后没有通往结束节点的路径。',
-          nodeId: node.id,
-        })
-    }
-  }
-  return issues
 }
 
 export function DesignerPrototype() {
@@ -336,11 +246,60 @@ function PrototypeEditor() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [checkOpen, setCheckOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [xmlOpen, setXmlOpen] = useState(false)
+  const [compileLoading, setCompileLoading] = useState(false)
+  const [publishLoading, setPublishLoading] = useState(false)
+  const [compiledXml, setCompiledXml] = useState<string | null>(null)
+  const [workflowError, setWorkflowError] = useState<string | null>(null)
+  const [workflowErrorStage, setWorkflowErrorStage] = useState<'compile' | 'publish'>('compile')
+  const [publishUncertain, setPublishUncertain] = useState(false)
+  const [publishRetryApproved, setPublishRetryApproved] = useState(false)
+  const [publishedTemplate, setPublishedTemplate] = useState<TaskTemplate | null>(null)
+  const revisionRef = useRef(0)
   const [hasChecked, setHasChecked] = useState(false)
   const { screenToFlowPosition, fitView } = useReactFlow<BusinessNode, BusinessEdge>()
-  const issues = useMemo(() => inspectFlow(nodes, edges), [nodes, edges])
+  const issues = useMemo(() => validateProjectApprovalFlow(nodes, edges), [nodes, edges])
+  const projectApprovalModel = useMemo(() => toProjectApprovalModel(nodes, edges), [nodes, edges])
+  const projectApprovalJson = useMemo(
+    () => JSON.stringify(projectApprovalModel, null, 2),
+    [projectApprovalModel],
+  )
+  const applicationNodeId = useMemo(() => inferApplicationNodeId(nodes, edges), [nodes, edges])
   const selectedNode = nodes.find((node) => node.id === selectedNodeId)
+  const selectedNodeForView = selectedNode
+    ? {
+        ...selectedNode,
+        data: {
+          ...selectedNode.data,
+          isApplication:
+            selectedNode.data.kind === 'approval' && selectedNode.id === applicationNodeId,
+        },
+      }
+    : undefined
+  const canvasNodes = useMemo(
+    () =>
+      nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          isApplication: node.data.kind === 'approval' && node.id === applicationNodeId,
+        },
+      })),
+    [applicationNodeId, nodes],
+  )
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId)
+  const invalidateCompilation = useCallback(() => {
+    revisionRef.current += 1
+    setCompiledXml(null)
+    setWorkflowError(null)
+    setWorkflowErrorStage('compile')
+    setPublishOpen(false)
+    setPublishedTemplate(null)
+    setPublishUncertain(false)
+    setPublishRetryApproved(false)
+  }, [])
   const clearSelection = () => {
     setSelectedNodeId(null)
     setSelectedEdgeId(null)
@@ -357,6 +316,7 @@ function PrototypeEditor() {
   }
   const updateNodeName = (name: string) => {
     if (!selectedNodeId) return
+    invalidateCompilation()
     setHasChecked(false)
     setNodes((current) =>
       current.map((node) =>
@@ -365,7 +325,7 @@ function PrototypeEditor() {
     )
   }
   const addNode = useCallback(
-    (kind: NodeKind, position?: { x: number; y: number }, purpose?: 'application' | 'review') => {
+    (kind: NodeKind, position?: { x: number; y: number }, purpose?: PalettePurpose) => {
       if ((kind === 'start' || kind === 'end') && nodes.some((node) => node.data.kind === kind))
         return
       const id = kind + '-' + Math.random().toString(36).slice(2, 8)
@@ -382,14 +342,14 @@ function PrototypeEditor() {
                 ? '立项申请单'
                 : '新审批步骤'
               : nodeLabels[kind],
-          ...(kind === 'approval' ? { purpose: purpose || 'review' } : {}),
         },
       }
       setNodes((current) => [...current, node])
+      invalidateCompilation()
       setHasChecked(false)
       selectNode(id)
     },
-    [nodes, setNodes],
+    [invalidateCompilation, nodes, setNodes],
   )
   const onDragStart = (event: DragEvent<HTMLButtonElement>, entry: PaletteEntry) => {
     event.dataTransfer.setData(
@@ -434,34 +394,56 @@ function PrototypeEditor() {
         branch,
       )
       setEdges((current) => addEdge(edge, current))
+      invalidateCompilation()
       setSelectedEdgeId(edge.id)
       setSelectedNodeId(null)
       setCheckOpen(false)
       setHasChecked(false)
     },
-    [edges, nodes, setEdges],
+    [edges, invalidateCompilation, nodes, setEdges],
   )
   const onReconnect = useCallback(
     (oldEdge: BusinessEdge, connection: Connection) => {
       if (!connection.source || !connection.target) return
-      setEdges((current) => reconnectEdge(oldEdge, connection, current))
+      const nextSource = nodes.find((node) => node.id === connection.source)
+      const nextBranch =
+        nextSource?.data.kind === 'condition'
+          ? oldEdge.data?.branch === 'reject'
+            ? 'reject'
+            : 'pass'
+          : 'continue'
+      setEdges((current) =>
+        reconnectEdge(oldEdge, connection, current).map((edge) =>
+          edge.id === oldEdge.id ? makeEdge(edge.id, edge.source, edge.target, nextBranch) : edge,
+        ),
+      )
+      invalidateCompilation()
       setHasChecked(false)
     },
-    [setEdges],
+    [invalidateCompilation, nodes, setEdges],
   )
   const updateEdgeBranch = (branch: Branch) => {
     if (!selectedEdgeId) return
+    if (branch !== 'continue') {
+      const selected = edges.find((edge) => edge.id === selectedEdgeId)
+      const source = nodes.find((node) => node.id === selected?.source)
+      if (source?.data.kind !== 'condition') return
+    }
     setHasChecked(false)
     setEdges((current) =>
       current.map((edge) =>
         edge.id === selectedEdgeId ? makeEdge(edge.id, edge.source, edge.target, branch) : edge,
       ),
     )
+    invalidateCompilation()
+    setPublishedTemplate(null)
   }
   const deleteNode = () => {
     if (!selectedNode || selectedNode.data.kind === 'start' || selectedNode.data.kind === 'end')
       return
     setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+    invalidateCompilation()
+    setPublishedTemplate(null)
     setEdges((current) =>
       current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
     )
@@ -471,6 +453,8 @@ function PrototypeEditor() {
   const deleteEdge = () => {
     if (!selectedEdgeId) return
     setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId))
+    invalidateCompilation()
+    setPublishedTemplate(null)
     clearSelection()
     setHasChecked(false)
   }
@@ -489,16 +473,97 @@ function PrototypeEditor() {
     [edges, nodes],
   )
   const reset = () => {
+    if (publishLoading) return
     setNodes(initialNodes)
     setEdges(initialEdges)
     clearSelection()
     setCheckOpen(false)
     setHasChecked(false)
+    invalidateCompilation()
+    setPublishedTemplate(null)
   }
   const openCheck = () => {
     setHasChecked(true)
     setCheckOpen(true)
     clearSelection()
+  }
+  const compileModel = async () => {
+    if (issues.length > 0) {
+      openCheck()
+      message.warning('请先修复流程检查中列出的问题，再编译业务模型。')
+      return
+    }
+    setCompileLoading(true)
+    setWorkflowError(null)
+    setWorkflowErrorStage('compile')
+    setCompiledXml(null)
+    const compileRevision = revisionRef.current
+    try {
+      const xml = await compileProjectApprovalModel(projectApprovalModel)
+      if (revisionRef.current !== compileRevision) return
+      setCompiledXml(xml)
+      message.success('业务模型编译成功，可以发布流程。')
+    } catch (error) {
+      if (revisionRef.current !== compileRevision) return
+      const text = error instanceof Error ? error.message : '业务模型编译失败，请稍后重试。'
+      setWorkflowError(text)
+      message.error(text)
+    } finally {
+      setCompileLoading(false)
+    }
+  }
+  const publishModel = async () => {
+    if (!compiledXml || (publishUncertain && !publishRetryApproved)) return
+    setPublishLoading(true)
+    setWorkflowError(null)
+    setWorkflowErrorStage('publish')
+    setPublishUncertain(false)
+    setPublishRetryApproved(false)
+    try {
+      const template = await businessWorkflowGateway.publishTemplate({
+        xml: compiledXml,
+        deploymentName: projectApprovalModel.processName,
+        taskKey: projectApprovalModel.processId,
+        taskName: projectApprovalModel.processName,
+        displayJson: projectApprovalModel as unknown as Record<string, unknown>,
+      })
+      assertDeploymentResult(template)
+      setPublishedTemplate(template)
+      setPublishOpen(true)
+      message.success('流程发布成功。')
+    } catch (error) {
+      const text = error instanceof Error ? error.message : '流程发布失败，请稍后重试。'
+      const uncertain = isDeploymentUncertain(error)
+      setPublishUncertain(uncertain)
+      const displayText = uncertain
+        ? text + ' 当前模板版本可能已更新，请先核对模板状态，再决定是否重试发布。'
+        : text
+      setWorkflowError(displayText)
+      setPublishRetryApproved(false)
+      message.error(displayText)
+    } finally {
+      setPublishLoading(false)
+    }
+  }
+  const locateIssue = (issue: ValidationIssue) => {
+    if (issue.edgeId) {
+      const edge = edges.find((candidate) => candidate.id === issue.edgeId)
+      if (edge) selectEdge(edge.id)
+      else if (issue.nodeId) selectNode(issue.nodeId)
+      void fitView({
+        nodes: [
+          ...(edge ? [{ id: edge.source }, { id: edge.target }] : []),
+          ...(issue.nodeId ? [{ id: issue.nodeId }] : []),
+        ],
+        padding: 0.55,
+        duration: 300,
+      })
+      return
+    }
+    if (issue.nodeId) {
+      selectNode(issue.nodeId)
+      void fitView({ nodes: [{ id: issue.nodeId }], padding: 0.55, duration: 300 })
+    }
   }
 
   return (
@@ -515,14 +580,84 @@ function PrototypeEditor() {
           <span className={styles.sessionNote}>
             <i /> 编辑暂存在当前页面
           </span>
-          <Button icon={<ReloadOutlined />} onClick={reset}>
+          <Button icon={<ReloadOutlined />} disabled={publishLoading} onClick={reset}>
             恢复示例
           </Button>
-          <Button type="primary" icon={<CheckCircleFilled />} onClick={openCheck}>
+          <Button icon={<DownloadOutlined />} onClick={() => setModelOpen(true)}>
+            业务模型 JSON
+          </Button>
+          <Button
+            type="primary"
+            icon={<CheckCircleFilled />}
+            disabled={compileLoading || publishLoading}
+            onClick={openCheck}
+          >
             检查流程
+          </Button>
+          <Button
+            icon={<CodeOutlined />}
+            loading={compileLoading}
+            disabled={publishLoading || issues.length > 0}
+            onClick={() => void compileModel()}
+          >
+            编译业务模型
+          </Button>
+          <Button
+            disabled={!compiledXml || compileLoading || publishLoading}
+            icon={<FileSearchOutlined />}
+            onClick={() => setXmlOpen(true)}
+          >
+            查看编译结果
+          </Button>
+          <Button
+            type="primary"
+            icon={<CloudUploadOutlined />}
+            disabled={
+              !compiledXml ||
+              publishLoading ||
+              compileLoading ||
+              (publishUncertain && !publishRetryApproved)
+            }
+            onClick={() => void publishModel()}
+          >
+            发布流程
           </Button>
         </div>
       </header>
+      {workflowError && (
+        <Alert
+          type="error"
+          showIcon
+          closable
+          message={workflowErrorStage === 'publish' ? '流程发布失败' : '业务模型编译失败'}
+          description={workflowError}
+          onClose={() => setWorkflowError(null)}
+        />
+      )}
+      {workflowErrorStage === 'publish' && publishUncertain && (
+        <Alert
+          type="warning"
+          showIcon
+          message="无法确认刚才的发布是否已完成"
+          description="部署请求超时或服务端报错时，后端可能已经创建新版本。请先核对任务模板与流程定义，再明确选择是否重试。"
+          action={
+            <Button
+              size="small"
+              onClick={() =>
+                Modal.confirm({
+                  title: '确认重试发布？',
+                  content: '只有在已核对当前任务模板和流程定义后，才继续使用同一 taskKey 发布。',
+                  okText: '继续发布',
+                  cancelText: '暂不重试',
+                  onOk: () => setPublishRetryApproved(true),
+                })
+              }
+            >
+              已核对，允许重试
+            </Button>
+          }
+        />
+      )}
       <div className={styles.flowSummary}>
         <span className={styles.summaryIcon}>
           <ApartmentOutlined />
@@ -547,8 +682,18 @@ function PrototypeEditor() {
             <span>尚未检查</span>
           )}
         </span>
+        {publishedTemplate && (
+          <span className={styles.publishedBadge}>
+            <CheckCircleFilled /> 已发布 v{publishedTemplate.version}
+          </span>
+        )}
       </div>
-      <main className={styles.workspace}>
+      <main
+        className={
+          styles.workspace + (compileLoading || publishLoading ? ' ' + styles.workspaceBusy : '')
+        }
+        aria-busy={compileLoading || publishLoading}
+      >
         <aside className={styles.palette}>
           <div className={styles.panelHeading}>
             <b>节点库</b>
@@ -558,8 +703,9 @@ function PrototypeEditor() {
           <div className={styles.paletteList}>
             {paletteNodes.map((entry) => {
               const singletonUsed =
-                (entry.kind === 'start' || entry.kind === 'end') &&
-                nodes.some((node) => node.data.kind === entry.kind)
+                ((entry.kind === 'start' || entry.kind === 'end') &&
+                  nodes.some((node) => node.data.kind === entry.kind)) ||
+                (entry.purpose === 'application' && applicationNodeId !== undefined)
               return (
                 <button
                   key={entry.purpose || entry.kind}
@@ -580,7 +726,7 @@ function PrototypeEditor() {
                       styles.paletteIcon +
                       ' ' +
                       styles['node-' + entry.kind] +
-                      (entry.purpose ? ' ' + styles['purpose-' + entry.purpose] : '')
+                      (entry.purpose === 'application' ? ' ' + styles['purpose-application'] : '')
                     }
                   >
                     {entry.icon}
@@ -608,20 +754,8 @@ function PrototypeEditor() {
                 <small>业务系统固定提供</small>
               </div>
             </div>
-            <div className={styles.fieldRow}>
-              项目名称 <i>必填</i>
-              <small>文本</small>
-            </div>
-            <div className={styles.fieldRow}>
-              项目类型 <i>必填</i>
-              <small>单选</small>
-            </div>
-            <div className={styles.fieldRow}>
-              计划金额 <i>必填</i>
-              <small>数字</small>
-            </div>
             <div className={styles.formFoot}>
-              <InfoCircleOutlined /> 表单字段在此流程中只读
+              <InfoCircleOutlined /> 字段与表单值由业务系统提供；流程设计不配置字段结构
             </div>
           </section>
         </aside>
@@ -644,7 +778,7 @@ function PrototypeEditor() {
             }}
           >
             <ReactFlow
-              nodes={nodes}
+              nodes={canvasNodes}
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={(changes) => {
@@ -653,10 +787,18 @@ function PrototypeEditor() {
                   changes.some((change) => change.type === 'position' || change.type === 'remove')
                 )
                   setHasChecked(false)
+                if (
+                  changes.some((change) => change.type === 'position' || change.type === 'remove')
+                ) {
+                  invalidateCompilation()
+                }
               }}
               onEdgesChange={(changes) => {
                 onEdgesChange(changes)
-                if (changes.some((change) => change.type === 'remove')) setHasChecked(false)
+                if (changes.some((change) => change.type === 'remove')) {
+                  setHasChecked(false)
+                  invalidateCompilation()
+                }
               }}
               onConnect={onConnect}
               onReconnect={onReconnect}
@@ -694,7 +836,7 @@ function PrototypeEditor() {
                 {selectedEdge
                   ? '连线属性'
                   : selectedNode
-                    ? displayNodeLabel(selectedNode) + '节点'
+                    ? displayNodeLabel(selectedNodeForView || selectedNode) + '节点'
                     : checkOpen
                       ? '流程检查'
                       : '流程属性'}
@@ -722,8 +864,12 @@ function PrototypeEditor() {
               </button>
             )}
           </div>
-          {selectedNode ? (
-            <NodeProperties node={selectedNode} onName={updateNodeName} onDelete={deleteNode} />
+          {selectedNodeForView ? (
+            <NodeProperties
+              node={selectedNodeForView}
+              onName={updateNodeName}
+              onDelete={deleteNode}
+            />
           ) : selectedEdge ? (
             <EdgeProperties
               edge={selectedEdge}
@@ -733,24 +879,134 @@ function PrototypeEditor() {
               onDelete={deleteEdge}
             />
           ) : checkOpen ? (
-            <CheckResults
-              issues={issues}
-              onSelect={(issue) =>
-                issue.nodeId
-                  ? selectNode(issue.nodeId)
-                  : issue.edgeId
-                    ? selectEdge(issue.edgeId)
-                    : undefined
-              }
-            />
+            <CheckResults issues={issues} onSelect={locateIssue} />
           ) : (
             <FlowProperties onCheck={openCheck} />
           )}
         </aside>
       </main>
+      <Modal
+        open={modelOpen}
+        title="立项审批业务模型 JSON"
+        width={720}
+        onCancel={() => setModelOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setModelOpen(false)}>
+            关闭
+          </Button>,
+          <Button
+            key="download"
+            type="primary"
+            icon={<DownloadOutlined />}
+            onClick={() => {
+              const file = new Blob([projectApprovalJson], { type: 'application/json' })
+              const url = URL.createObjectURL(file)
+              const anchor = document.createElement('a')
+              anchor.href = url
+              anchor.download = 'project_approval_json.json'
+              anchor.click()
+              URL.revokeObjectURL(url)
+            }}
+          >
+            下载 JSON
+          </Button>,
+        ]}
+      >
+        <p className={styles.modelCaption}>
+          当前画布生成的业务模型；编译时通过既有接口交由后端转换为 BPMN XML。
+        </p>
+        <pre className={styles.modelPreview}>{projectApprovalJson}</pre>
+      </Modal>
+      <Modal
+        open={xmlOpen}
+        title="后端编译结果 · BPMN XML"
+        width={760}
+        onCancel={() => setXmlOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setXmlOpen(false)}>
+            关闭
+          </Button>,
+          <Button
+            key="download"
+            type="primary"
+            icon={<DownloadOutlined />}
+            onClick={() => {
+              if (!compiledXml) return
+              const file = new Blob([compiledXml], { type: 'application/xml' })
+              const url = URL.createObjectURL(file)
+              const anchor = document.createElement('a')
+              anchor.href = url
+              anchor.download = 'project-approval.bpmn'
+              anchor.click()
+              URL.revokeObjectURL(url)
+            }}
+          >
+            下载 XML
+          </Button>,
+        ]}
+      >
+        <p className={styles.modelCaption}>
+          XML 来自后端编译结果，仅供检查与下载；修改流程后需要重新编译。
+        </p>
+        <pre className={styles.modelPreview}>{compiledXml}</pre>
+      </Modal>
+      <Modal
+        open={publishOpen}
+        title="流程已发布"
+        width={620}
+        footer={
+          <Button type="primary" onClick={() => setPublishOpen(false)}>
+            完成
+          </Button>
+        }
+        onCancel={() => setPublishOpen(false)}
+      >
+        {publishedTemplate && (
+          <div className={styles.publishResult}>
+            <div className={styles.publishSuccess}>
+              <CheckCircleFilled /> 新版本已部署
+            </div>
+            <div className={styles.publishMeta}>
+              <span>任务模板</span>
+              <code>{publishedTemplate.taskKey}</code>
+            </div>
+            <div className={styles.publishMeta}>
+              <span>版本</span>
+              <b>{publishedTemplate.version}</b>
+            </div>
+            <div className={styles.publishMeta}>
+              <span>部署标识</span>
+              <code>{publishedTemplate.deploymentId}</code>
+            </div>
+            <div className={styles.publishMeta}>
+              <span>流程定义</span>
+              <code>{publishedTemplate.processDefinitionId}</code>
+            </div>
+            <div className={styles.publishVariables}>
+              <b>启动时需要的字段</b>
+              {getTemplateStartVariables(publishedTemplate).length ? (
+                getTemplateStartVariables(publishedTemplate).map((variable) => (
+                  <div className={styles.startVariable} key={variable.name}>
+                    <code>{variable.name}</code>
+                    <span>{variable.description || variable.type}</span>
+                    {variable.required && <Tag color="red">必填</Tag>}
+                  </div>
+                ))
+              ) : (
+                <small>后端未返回启动字段说明。</small>
+              )}
+            </div>
+            <Alert
+              type="info"
+              showIcon
+              message="运行中的实例绑定其流程定义版本。再次发布会创建新部署；后端模板记录按 taskKey 更新。"
+            />
+          </div>
+        )}
+      </Modal>
       <footer className={styles.footer}>
         <span>
-          <InfoCircleOutlined /> 业务流程原型 · 不保存草稿，不涉及审批人员配置或流程引擎变量
+          <InfoCircleOutlined /> 业务流程原型 · 不保存草稿；审批人员不在设计期配置
         </span>
         <span>
           <b>{nodes.length}</b> 个节点 <i /> <b>{edges.length}</b> 条连线
@@ -777,13 +1033,17 @@ function NodeProperties({
           styles.propertyKind +
           ' ' +
           styles['node-' + kind] +
-          (node.data.purpose ? ' ' + styles['purpose-' + node.data.purpose] : '')
+          (node.data.isApplication ? ' ' + styles['purpose-application'] : '')
         }
       >
         <span>
           {
-            paletteNodes.find((item) => item.kind === kind && item.purpose === node.data.purpose)
-              ?.icon
+            paletteNodes.find(
+              (item) =>
+                item.kind === kind &&
+                (kind !== 'approval' ||
+                  item.purpose === (node.data.isApplication ? 'application' : 'review')),
+            )?.icon
           }
         </span>
         <div>
@@ -800,7 +1060,7 @@ function NodeProperties({
         maxLength={40}
         onChange={(event) => onName(event.target.value)}
       />
-      {kind === 'approval' && (
+      {kind === 'approval' && !node.data.isApplication && (
         <div className={styles.infoCard}>
           <UserOutlined />
           <div>
@@ -818,7 +1078,7 @@ function NodeProperties({
           </div>
         </div>
       )}
-      {node.data.purpose === 'application' && (
+      {node.data.isApplication && (
         <div className={styles.infoCard}>
           <FileTextOutlined />
           <div>
@@ -896,7 +1156,6 @@ function EdgeProperties({
           options={[
             { value: 'pass', label: '审批通过' },
             { value: 'reject', label: '审批驳回' },
-            { value: 'continue', label: '继续流转' },
           ]}
         />
       ) : (
@@ -1011,11 +1270,18 @@ function CheckResults({
         {issues.map((issue, index) => (
           <button
             key={(issue.nodeId || issue.edgeId || 'flow') + '-' + index}
+            className={styles.issueItem}
             onClick={() => onSelect(issue)}
           >
             <ExclamationCircleOutlined />
             <span>{issue.message}</span>
-            <i>查看</i>
+            <i>
+              {issue.locationLabel
+                ? issue.locationLabel + ' · 查看'
+                : issue.nodeId || issue.edgeId
+                  ? '画布中查看'
+                  : '流程检查'}
+            </i>
           </button>
         ))}
       </div>

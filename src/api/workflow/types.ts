@@ -5,6 +5,8 @@ export interface TaskTemplateVariable {
   type: string
   value?: unknown
   description?: string
+  source?: 'start' | 'complete' | 'engine'
+  required?: boolean
 }
 
 export interface TaskTemplate {
@@ -38,6 +40,10 @@ export interface TaskTemplateDetail extends TaskTemplate {
 export interface PublishTemplateInput {
   xml: string
   deploymentName?: string
+  /**
+   * Unique key for this template. Existing backend contract overwrites a
+   * template when the same key is deployed again.
+   */
   taskKey?: string
   taskName?: string
   version?: number

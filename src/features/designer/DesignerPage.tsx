@@ -464,7 +464,6 @@ export function DesignerPage() {
   if (import.meta.env.DEV && searchParams.get('variant') === 'canvas') {
     return <DesignerPrototype />
   }
-
   return <ProductionDesignerPage />
 }
 
