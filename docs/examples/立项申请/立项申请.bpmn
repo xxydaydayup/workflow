@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<definitions xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_1" targetNamespace="http://camunda.org/examples" xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL">
+  <process id="project-approval" isExecutable="true" name="立项审批">
+    <extensionElements>
+      <camunda:executionListener event="start" expression="${execution.setVariable('managers_approveMode','ALL')}"/>
+    </extensionElements>
+    <startEvent id="start" name="发起"/>
+    <userTask camunda:assignee="${apply_assignee}" id="apply" name="立项审批单"/>
+    <userTask camunda:assignee="${minister_assignee}" id="minister" name="部长审批"/>
+    <exclusiveGateway id="gwMinister" name="部长审批结果"/>
+    <userTask camunda:assignee="${approver}" id="managers" name="各部门经理会签">
+      <extensionElements>
+        <camunda:taskListener delegateExpression="${voteListener}" event="create"/>
+        <camunda:taskListener delegateExpression="${voteListener}" event="complete"/>
+        <camunda:taskListener delegateExpression="${voteListener}" event="delete"/>
+      </extensionElements>
+      <multiInstanceLoopCharacteristics camunda:collection="${managers_approverList}" camunda:elementVariable="approver" id="mi_managers" isSequential="false">
+        <completionCondition id="completionCondition_a9ebd6e1-ef00-4868-b053-5fa128bcac0d">${managers_decided}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+    </userTask>
+    <exclusiveGateway id="gwManagers" name="会签结果"/>
+    <endEvent id="end" name="结束"/>
+    <sequenceFlow id="flow_start_apply" sourceRef="start" targetRef="apply"/>
+    <sequenceFlow id="flow_apply_minister" sourceRef="apply" targetRef="minister"/>
+    <sequenceFlow id="flow_minister_gwMinister" sourceRef="minister" targetRef="gwMinister"/>
+    <sequenceFlow id="flow_gwMinister_managers" sourceRef="gwMinister" targetRef="managers">
+      <conditionExpression id="conditionExpression_bc3f6962-f3ec-4090-9a69-4fab5f2b4de1">${minister_approved}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="flow_gwMinister_apply" sourceRef="gwMinister" targetRef="apply">
+      <conditionExpression id="conditionExpression_580e407d-87a1-4972-b991-6ac448ef3ede">${!minister_approved}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="flow_managers_gwManagers" sourceRef="managers" targetRef="gwManagers"/>
+    <sequenceFlow id="flow_gwManagers_end" sourceRef="gwManagers" targetRef="end">
+      <conditionExpression id="conditionExpression_5352f0b5-2a9a-44fe-8818-243a85f72d39">${managers_passed}</conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="flow_gwManagers_apply" sourceRef="gwManagers" targetRef="apply">
+      <conditionExpression id="conditionExpression_36d742d3-7168-4018-b4a0-df4fc43fd10e">${!managers_passed}</conditionExpression>
+    </sequenceFlow>
+  </process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane bpmnElement="project-approval" id="Plane_1">
+      <bpmndi:BPMNShape bpmnElement="start" id="shape_start">
+        <dc:Bounds height="36.0" width="36.0" x="100.0" y="165.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_90a69788-da85-4cb7-90ca-366731aff5d5">
+          <dc:Bounds height="36.0" width="36.0" x="100.0" y="165.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="apply" id="shape_apply">
+        <dc:Bounds height="80.0" width="100.0" x="180.0" y="145.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="minister" id="shape_minister">
+        <dc:Bounds height="80.0" width="100.0" x="340.0" y="145.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="gwMinister" id="shape_gwMinister">
+        <dc:Bounds height="50.0" width="50.0" x="500.0" y="160.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="managers" id="shape_managers">
+        <dc:Bounds height="80.0" width="100.0" x="600.0" y="145.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="gwManagers" id="shape_gwManagers">
+        <dc:Bounds height="50.0" width="50.0" x="760.0" y="160.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="end" id="shape_end">
+        <dc:Bounds height="36.0" width="36.0" x="860.0" y="165.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_7281818e-562e-4b20-bb86-ed2581078570">
+          <dc:Bounds height="36.0" width="36.0" x="860.0" y="165.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="flow_start_apply" id="edge_flow_start_apply">
+        <di:waypoint x="136.0" y="183.0"/>
+        <di:waypoint x="158.0" y="183.0"/>
+        <di:waypoint x="158.0" y="185.0"/>
+        <di:waypoint x="180.0" y="185.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_apply_minister" id="edge_flow_apply_minister">
+        <di:waypoint x="280.0" y="185.0"/>
+        <di:waypoint x="340.0" y="185.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_minister_gwMinister" id="edge_flow_minister_gwMinister">
+        <di:waypoint x="440.0" y="185.0"/>
+        <di:waypoint x="500.0" y="185.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_gwMinister_managers" id="edge_flow_gwMinister_managers">
+        <di:waypoint x="550.0" y="185.0"/>
+        <di:waypoint x="600.0" y="185.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_gwMinister_apply" id="edge_flow_gwMinister_apply">
+        <di:waypoint x="525.0" y="210.0"/>
+        <di:waypoint x="525.0" y="245.0"/>
+        <di:waypoint x="230.0" y="245.0"/>
+        <di:waypoint x="230.0" y="225.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_managers_gwManagers" id="edge_flow_managers_gwManagers">
+        <di:waypoint x="700.0" y="185.0"/>
+        <di:waypoint x="760.0" y="185.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_gwManagers_end" id="edge_flow_gwManagers_end">
+        <di:waypoint x="810.0" y="185.0"/>
+        <di:waypoint x="835.0" y="185.0"/>
+        <di:waypoint x="835.0" y="183.0"/>
+        <di:waypoint x="860.0" y="183.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="flow_gwManagers_apply" id="edge_flow_gwManagers_apply">
+        <di:waypoint x="785.0" y="210.0"/>
+        <di:waypoint x="785.0" y="245.0"/>
+        <di:waypoint x="230.0" y="245.0"/>
+        <di:waypoint x="230.0" y="225.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
