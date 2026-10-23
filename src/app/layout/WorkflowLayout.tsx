@@ -4,6 +4,7 @@ import {
   ApartmentOutlined,
   BellOutlined,
   DeploymentUnitOutlined,
+  FormOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
 import { Badge, Input, Tooltip } from 'antd'
@@ -11,6 +12,7 @@ import styles from './WorkflowLayout.module.less'
 
 const pageTitles: Record<string, string> = {
   '/designer': '流程设计',
+  '/start-approval': '发起立项审批',
   '/monitoring': '运行监控',
 }
 
@@ -39,6 +41,13 @@ export function WorkflowLayout() {
             <ApartmentOutlined />
             <span>流程设计</span>
             <kbd>⌘ 1</kbd>
+          </NavLink>
+          <NavLink
+            to="/start-approval"
+            className={({ isActive }) => (isActive ? styles.activeLink : styles.navLink)}
+          >
+            <FormOutlined />
+            <span>发起审批</span>
           </NavLink>
           <NavLink
             to="/monitoring"

@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { WorkflowLayout } from '@/app/layout/WorkflowLayout'
 import { DesignerPage } from '@/features/designer/DesignerPage'
 import { MonitoringPage } from '@/features/monitoring/MonitoringPage'
+import { ApprovalInstanceStart } from '@/features/designer/ApprovalInstanceStart'
 
 export function App() {
   return (
@@ -10,6 +11,7 @@ export function App() {
         <Route element={<WorkflowLayout />}>
           <Route index element={<Navigate to="/designer" replace />} />
           <Route path="designer" element={<DesignerPage />} />
+          <Route path="start-approval" element={<ApprovalInstanceStart />} />
           <Route path="monitoring" element={<MonitoringPage />} />
           <Route path="*" element={<Navigate to="/designer" replace />} />
         </Route>
