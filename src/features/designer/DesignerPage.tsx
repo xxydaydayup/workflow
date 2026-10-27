@@ -58,6 +58,7 @@ import {
 } from './approvalModel'
 import styles from './DesignerPage.module.less'
 import { DesignerPrototype } from './DesignerPrototype'
+import { DesignerUiPrototype } from './DesignerUiPrototype'
 import '@xyflow/react/dist/style.css'
 
 type PositionMap = Record<string, { x: number; y: number }>
@@ -461,6 +462,14 @@ function ModelExport({
 
 export function DesignerPage() {
   const [searchParams] = useSearchParams()
+  const uiPrototype = searchParams.get('variant')
+  if (
+    import.meta.env.DEV &&
+    uiPrototype &&
+    ['prototype-a', 'prototype-b', 'prototype-c'].includes(uiPrototype)
+  ) {
+    return <DesignerUiPrototype />
+  }
   if (!import.meta.env.DEV || searchParams.get('variant') !== 'generic') {
     return <DesignerPrototype />
   }
