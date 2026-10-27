@@ -77,7 +77,7 @@ _Avoid_: formKey、Camunda 表单
 _Avoid_: initiator、申请人
 
 **打回**：
-审批人不同意，流程回到发起人。
+审批人不同意后，流程沿驳回路径进入目标步骤，并从该步骤继续运行。
 _Avoid_: 拒绝、驳回、refuse
 
 **重新提交**：
