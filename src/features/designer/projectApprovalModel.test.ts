@@ -213,7 +213,7 @@ describe('project approval model adapter', () => {
     expect(inferApplicationNodeId(nodes, edges)).toBe('step-a')
   })
 
-  it('does not fall back to the start path when completed rejection paths point elsewhere', () => {
+  it('identifies the application step from the start path even when rejects target other steps', () => {
     const nodes: ProjectFlowNode[] = [
       {
         id: 'start',
@@ -253,7 +253,7 @@ describe('project approval model adapter', () => {
       { id: 'result-end', source: 'result', target: 'end', data: { branch: 'reject' } },
     ]
 
-    expect(inferApplicationNodeId(nodes, edges)).toBeUndefined()
+    expect(inferApplicationNodeId(nodes, edges)).toBe('apply')
   })
 
   it('returns actionable labels for missing names and isolated nodes', () => {
@@ -307,7 +307,7 @@ describe('project approval model adapter', () => {
     )
   })
 
-  it('identifies an incorrect start path and keeps both endpoints available for navigation', () => {
+  it('allows a reject path to resume from an earlier approval step', () => {
     const nodes: ProjectFlowNode[] = [
       {
         id: 'start',
@@ -341,20 +341,14 @@ describe('project approval model adapter', () => {
       },
     ]
     const edges: ProjectFlowEdge[] = [
-      { id: 'start-review', source: 'start', target: 'review' },
+      { id: 'start-apply', source: 'start', target: 'apply' },
+      { id: 'apply-review', source: 'apply', target: 'review' },
       { id: 'review-result', source: 'review', target: 'result' },
-      { id: 'result-apply', source: 'result', target: 'apply', data: { branch: 'reject' } },
+      { id: 'result-review', source: 'result', target: 'review', data: { branch: 'reject' } },
       { id: 'result-end', source: 'result', target: 'end', data: { branch: 'pass' } },
-      { id: 'apply-end', source: 'apply', target: 'end' },
     ]
-    const issue = validateProjectApprovalFlow(nodes, edges).find(
-      (candidate) => candidate.message === '开始节点应直接连接到立项申请填写步骤。',
-    )
 
-    expect(issue).toMatchObject({
-      edgeId: 'start-review',
-      nodeId: 'review',
-      locationLabel: '发起 → 审批',
-    })
+    expect(inferApplicationNodeId(nodes, edges)).toBe('apply')
+    expect(validateProjectApprovalFlow(nodes, edges)).toEqual([])
   })
 })

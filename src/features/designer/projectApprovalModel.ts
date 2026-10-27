@@ -23,18 +23,6 @@ export function inferApplicationNodeId(
   nodes: ProjectFlowNode[],
   edges: ProjectFlowEdge[],
 ): string | undefined {
-  const rejectionEdges = edges.filter(
-    (edge) =>
-      edge.data?.branch === 'reject' &&
-      nodes.some((node) => node.id === edge.source && node.data.kind === 'condition'),
-  )
-  if (rejectionEdges.length > 0) {
-    const returnTargets = new Set(rejectionEdges.map((edge) => edge.target))
-    if (returnTargets.size !== 1) return undefined
-    const target = nodes.find((node) => node.id === rejectionEdges[0]?.target)
-    return target?.data.kind === 'approval' ? target.id : undefined
-  }
-
   const starts = nodes.filter((node) => node.data.kind === 'start')
   if (starts.length === 1) {
     const firstApprovals = edges
@@ -167,15 +155,6 @@ export function validateProjectApprovalFlow(
       issues.push({ message: '条件分支路径必须标记为“通过”或“驳回”。', edgeId: edge.id })
   }
 
-  const rejectTargets = new Set(
-    edges
-      .filter(
-        (edge) =>
-          edge.data?.branch === 'reject' &&
-          nodes.some((node) => node.id === edge.source && node.data.kind === 'condition'),
-      )
-      .map((edge) => edge.target),
-  )
   const applicationId = inferApplicationNodeId(nodes, edges)
   if (!applicationId) {
     issues.push({
@@ -215,14 +194,13 @@ export function validateProjectApprovalFlow(
           message: '“' + node.data.name + '”需要且只能有一条“驳回”路径。',
           nodeId: node.id,
         })
-      if (reject.length === 1 && rejectTargets.size > 1)
+      const rejectTarget = byId.get(reject[0]?.target || '')
+      if (
+        reject.length === 1 &&
+        (!rejectTarget || !['approval', 'countersign'].includes(rejectTarget.data.kind))
+      )
         issues.push({
-          message: '所有审批结果的“驳回”路径都应返回同一个申请填写步骤。',
-          edgeId: reject[0].id,
-        })
-      if (reject.length === 1 && applicationId && reject[0].target !== applicationId)
-        issues.push({
-          message: '“' + node.data.name + '”的驳回路径应返回申请填写步骤。',
+          message: '“' + node.data.name + '”的驳回路径需要连接到审批或会签步骤。',
           edgeId: reject[0].id,
         })
     }
