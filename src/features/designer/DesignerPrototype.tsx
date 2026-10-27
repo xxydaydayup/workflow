@@ -1,6 +1,7 @@
 /**
- * Throwaway UI prototype for the business-first approval flow designer.
- * The existing /designer route mounts it only in development with ?variant=canvas.
+ * Business-first approval flow designer.
+ * The /designer route mounts it by default; the previous generic designer stays
+ * available in development with ?variant=generic.
  */
 import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react'
 import {

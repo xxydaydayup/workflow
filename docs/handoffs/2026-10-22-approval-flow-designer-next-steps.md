@@ -10,7 +10,7 @@ issue 02 的真实转换验证和 issue 03–05 的前端实现均已完成。�
 - 已确认的业务模型契约：[project_approval_json](../examples/立项申请/project_approval_json.md)。
 - 现行架构边界：[ADR-0001：业务模型层与后端编译](../adr/0001-approval-model-and-backend-compilation.md)；当前术语定义：[GLOSSARY](../../GLOSSARY.md)。
 - 业务行为基准：[立项申请 BPMN](../examples/立项申请.bpmn)。出现歧义时遵循用户确认的立项审批业务语义，不从 Camunda 技术配置推断业务行为。
-- 当前原型实现位于 [DesignerPrototype.tsx](../../src/features/designer/DesignerPrototype.tsx)、[DesignerPrototype.module.less](../../src/features/designer/DesignerPrototype.module.less) 和 [projectApprovalModel.ts](../../src/features/designer/projectApprovalModel.ts)，通过 `/designer?variant=canvas` 查看。
+- 当前默认流程设计器实现位于 [DesignerPrototype.tsx](../../src/features/designer/DesignerPrototype.tsx)、[DesignerPrototype.module.less](../../src/features/designer/DesignerPrototype.module.less) 和 [projectApprovalModel.ts](../../src/features/designer/projectApprovalModel.ts)。旧通用设计器仅开发环境可通过 `/designer?variant=generic` 查看。
 
 ## 已确认的产品方向
 

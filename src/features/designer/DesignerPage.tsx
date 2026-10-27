@@ -461,7 +461,7 @@ function ModelExport({
 
 export function DesignerPage() {
   const [searchParams] = useSearchParams()
-  if (import.meta.env.DEV && searchParams.get('variant') === 'canvas') {
+  if (!import.meta.env.DEV || searchParams.get('variant') !== 'generic') {
     return <DesignerPrototype />
   }
   return <ProductionDesignerPage />
