@@ -1,24 +1,8 @@
-export type ProjectApprovalNodeType = 'start' | 'approval' | 'condition' | 'countersign' | 'end'
-export type ProjectApprovalBranch = 'pass' | 'reject'
-
-export interface ProjectApprovalNode {
-  id: string
-  type: ProjectApprovalNodeType
-  name: string
-  x: number
-  y: number
-  approveMode?: 'ALL'
-}
-
-export interface ProjectApprovalFlow {
-  source: string
-  target: string
-  branch?: ProjectApprovalBranch
-}
-
-export interface ProjectApprovalModel {
-  processId: string
-  processName: string
-  nodes: ProjectApprovalNode[]
-  flows: ProjectApprovalFlow[]
-}
+/** @deprecated Use WorkflowModel for newly designed workflows. */
+export type {
+  WorkflowBranch as ProjectApprovalBranch,
+  WorkflowFlow as ProjectApprovalFlow,
+  WorkflowModel as ProjectApprovalModel,
+  WorkflowNode as ProjectApprovalNode,
+  WorkflowNodeType as ProjectApprovalNodeType,
+} from './workflowModel'

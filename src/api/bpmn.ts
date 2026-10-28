@@ -1,16 +1,13 @@
 import { requestData } from '@/utils/request'
-import type { ProjectApprovalModel } from './projectApprovalModel'
+import type { WorkflowModel } from './workflowModel'
 
 export interface BpmnXMLResult {
   bpmnXml: string
 }
 
-/**
- * The backend currently exposes this as BPMN JSON conversion. The approved
- * product contract treats the endpoint as the project approval model compiler.
- */
-export async function compileProjectApprovalModel(
-  definition: ProjectApprovalModel,
+/** Compile a business workflow model through the backend's BPMN JSON endpoint. */
+export async function compileWorkflowModel(
+  definition: WorkflowModel,
   signal?: AbortSignal,
 ): Promise<string> {
   const result = await requestData<BpmnXMLResult>({
@@ -25,4 +22,6 @@ export async function compileProjectApprovalModel(
   return result.bpmnXml
 }
 
-export { compileProjectApprovalModel as convertBpmnToXml }
+/** @deprecated Use compileWorkflowModel for all workflow models. */
+export const compileProjectApprovalModel = compileWorkflowModel
+export const convertBpmnToXml = compileWorkflowModel
