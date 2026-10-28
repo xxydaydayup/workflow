@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "endpoint": {
+    "method": "POST",
+    "path": "/bpmn/json2xml",
+    "contentType": "application/json",
+    "description": "简化流程 JSON 转 BPMN 2.0 XML：自动补全审批人、会签监听器、分支条件等技术配置；校验失败返回 400。"
+  },
+  "topLevel": {
+    "processId": {
+      "type": "string",
+      "required": true,
+      "description": "流程定义 key，写入 BPMN process id"
+    },
+    "processName": { "type": "string", "required": false, "description": "流程名称，仅展示用" },
+    "nodes": {
+      "type": "array<node>",
+      "required": true,
+      "description": "节点列表，不能为空；节点 id 必须唯一"
+    },
+    "flows": {
+      "type": "array<flow>",
+      "required": false,
+      "description": "连线列表；source / target 必须存在于 nodes 中"
+    }
+  },
+  "node": {
+    "fields": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "description": "节点 id，流程内唯一，运行时变量名由它派生"
+      },
+      "type": {
+        "type": "string",
+        "required": true,
+        "description": "节点语义类型；兼容旧值 startEvent / userTask / exclusiveGateway / endEvent（旧值不做自动补全）",
+        "allowed": ["start", "approval", "countersign", "condition", "service", "end"]
+      },
+      "name": {
+        "type": "string",
+        "required": false,
+        "description": "节点名称，展示用，同时用于变量说明文案"
+      },
+      "form": {
+        "type": "string",
+        "required": false,
+        "description": "表单 key，写入 camunda:formKey；不传则不生成"
+      },
+      "serviceName": {
+        "type": "string",
+        "required": false,
+        "description": "仅 service：服务名称；填了则固化到 BPMN，发起实例无需传入"
+      },
+      "serviceUrl": {
+        "type": "string",
+        "required": false,
+        "description": "仅 service：服务地址；填了则固化到 BPMN，发起实例无需传入"
+      },
+      "approveMode": {
+        "type": "string",
+        "required": false,
+        "description": "仅 countersign：审批模式。填了则固化到 BPMN；不填则发起实例时传 {节点id}_approveMode，缺省 ALL",
+        "allowed": ["ALL", "ANY", "VOTE"]
+      },
+      "passRate": {
+        "type": "string",
+        "required": false,
+        "description": "仅 countersign：通过比例，范围 (0,1]。模板里 approveMode=VOTE 时必须同时填写；模板不填则由发起实例时传 {节点id}_passRate"
+      },
+      "sequential": {
+        "type": "boolean",
+        "required": false,
+        "description": "仅 countersign：是否串行，缺省 false（并行）"
+      },
+      "reminder": {
+        "type": "object",
+        "required": false,
+        "description": "仅 approval / countersign：审批超时提醒。不填则无提醒；填了则自动派生 {节点id}_reminderTimer（非中断边界定时事件，挂 event=start 监听器投递 NATS） + {节点id}_reminderEnd（提醒分支结束），前端无需画这两个节点；duration 优先级、消息字段见顶层 reminder 段",
+        "fields": {
+          "duration": {
+            "type": "string",
+            "required": false,
+            "description": "ISO-8601 时长，如 PT30M / PT2H / P1D。填了则固化到 BPMN；不填则发起实例时传 {节点id}_reminderDuration，缺省 P1D"
+          },
+          "name": {
+            "type": "string",
+            "required": false,
+            "description": "提醒外部任务名称，缺省「{节点名称}超时提醒」"
+          }
+        }
+      },
+      "assignee": {
+        "type": "string",
+        "required": false,
+        "description": "仅 approval：办理人，缺省 ${节点id}_assignee；countersign 忽略该值"
+      },
+      "x": { "type": "integer", "required": false, "description": "画布 X 坐标，缺省自动布局" },
+      "y": { "type": "integer", "required": false, "description": "画布 Y 坐标，缺省自动布局" },
+      "width": {
+        "type": "integer",
+        "required": false,
+        "description": "节点宽度，缺省按节点类型取默认值"
+      },
+      "height": {
+        "type": "integer",
+        "required": false,
+        "description": "节点高度，缺省按节点类型取默认值"
+      }
+    },
+    "types": {
+      "start": { "bpmnElement": "startEvent", "description": "开始节点", "variables": [] },
+      "approval": {
+        "bpmnElement": "userTask",
+        "description": "单人审批；缺省 assignee 为 ${节点id}_assignee，发起实例时传 {节点id}_assignee",
+        "variables": ["{节点id}_assignee"]
+      },
+      "countersign": {
+        "bpmnElement": "userTask + multiInstance",
+        "description": "多人审批（会签 / 或签 / 投票）；审批人集合必传，结果由 VoteListener 计算",
+        "variables": ["{节点id}_approverList", "{节点id}_approveMode", "{节点id}_passRate", "vote"]
+      },
+      "condition": {
+        "bpmnElement": "exclusiveGateway",
+        "description": "排他网关；出边用 branch=pass / reject，上游需恰好一个审批类节点",
+        "variables": []
+      },
+      "service": {
+        "bpmnElement": "serviceTask（外部任务，topic=service）",
+        "description": "外部服务节点；服务名 / 地址可模板固定，也可发起实例时传入",
+        "variables": ["{节点id}_serviceName", "{节点id}_serviceUrl", "{节点id}_passed"]
+      },
+      "end": { "bpmnElement": "endEvent", "description": "结束节点", "variables": [] }
+    },
+    "legacyTypes": ["startEvent", "userTask", "exclusiveGateway", "endEvent"],
+    "legacyNote": "旧值原样透传，不做自动补全（不生成审批人、会签、分支条件等技术配置）"
+  },
+  "reminder": {
+    "description": "审批超时提醒：只在 approval / countersign 节点上填 reminder 对象。派生的两个节点与一条连线全部由后端生成，前端不用画，也不要出现在 nodes / flows 里",
+    "derivedNodes": [
+      {
+        "id": "{节点id}_reminderTimer",
+        "element": "boundaryEvent + timerEventDefinition",
+        "description": "非中断边界定时事件（cancelActivity=false），挂在原用户节点上；到点未处理时开辟提醒分支，原审批任务继续等待。节点名即提醒文案（缺省「{节点名称}超时提醒」）"
+      },
+      {
+        "id": "{节点id}_reminderEnd",
+        "element": "endEvent",
+        "description": "提醒分支收尾节点，只结束该分支的 token，不代表流程结束；网关部署时会跳过它，不会在它前面注入 task_finish"
+      }
+    ],
+    "flows": [
+      "{节点id}_reminderTimer -> {节点id}_reminderEnd",
+      "id 规则与手写连线一致：flow_{source}_{target}"
+    ],
+    "durationResolution": [
+      "reminder.duration 填了：固化到 BPMN，由 process 级 start 监听器写入 {节点id}_reminderDuration，发起实例无需再传",
+      "reminder.duration 没填：发起实例时传 {节点id}_reminderDuration；仍未传时 BPMN 用 EL 兜底为 P1D，定时器不会因变量缺失报错"
+    ],
+    "message": {
+      "transport": "NATS",
+      "publisher": "引擎侧执行监听器 ${reminderListener}，挂在边界事件的 event=start 上",
+      "subject": "{subject-prefix}.{tenantId}，与任务创建事件共用同一 subject；默认前缀 camunda.task.created",
+      "timing": "定时器触发、执行流进入边界事件时投递；发布带 flush 确认，失败会抛出异常让定时器 job 回滚重试，因此属于「至少一次」，订阅方需按 nodeId + processInstanceId 幂等",
+      "fields": {
+        "eventType": "固定 task.reminder（任务创建事件为 task.created），订阅方按它区分",
+        "nodeId": "原审批节点 id（由 activityId 去掉 _reminderTimer 后缀得到）",
+        "executionId / activityId": "触发提醒的执行流 id 与边界事件节点 id",
+        "reminderName": "提醒文案，取自边界事件节点名",
+        "tenantId / businessKey / processInstanceId / processDefinitionId / processDefinitionKey": "流程标识，用于回查业务数据",
+        "reminderTime": "投递时间，RFC3339",
+        "duration": "可选，{节点id}_reminderDuration 的值",
+        "assignee": "可选，仅 approval：{节点id}_assignee",
+        "approvers": "可选，仅 countersign：{节点id}_approverList 集合"
+      }
+    }
+  },
+  "flow": {
+    "fields": {
+      "id": {
+        "type": "string",
+        "required": false,
+        "description": "连线 id；缺省生成 flow_{source}_{target}，冲突时追加序号"
+      },
+      "source": {
+        "type": "string",
+        "required": true,
+        "description": "源节点 id，必须存在于 nodes 中"
+      },
+      "target": {
+        "type": "string",
+        "required": true,
+        "description": "目标节点 id，必须存在于 nodes 中"
+      },
+      "branch": {
+        "type": "string",
+        "required": false,
+        "description": "分支语义，仅审批类节点或排他网关的出边可用；会签 / 服务取 {节点id}_passed，单人审批取 {节点id}_approved，reject 取反",
+        "allowed": ["pass", "reject"]
+      },
+      "conditionExpression": {
+        "type": "string",
+        "required": false,
+        "description": "显式 EL 条件，优先级高于 branch"
+      }
+    },
+    "rules": [
+      "source / target 必填且必须存在于 nodes 中",
+      "branch 仅适用于 approval / countersign / service 节点的出边，或 condition 网关的出边",
+      "condition 网关的出边用 branch 时，其上游必须有且仅有一个 approval / countersign / service 节点，否则请显式传 conditionExpression",
+      "显式 conditionExpression 会覆盖按 branch 推导的条件"
+    ]
+  },
+  "rules": [
+    "nodes 不能为空；节点 id 不能重复",
+    "type 不支持时直接报错，不会静默丢弃节点",
+    "flow.source / flow.target 必须存在于 nodes 中；flow.id 不能重复",
+    "approveMode 只能是 ALL / ANY / VOTE，其他值报错",
+    "passRate 必须是 (0,1] 的数字；模板里 approveMode=VOTE 时未填 passRate 会报错",
+    "reminder 只能配在 approval / countersign 节点上，其他类型填了直接报错",
+    "reminder.duration 必须是 ISO-8601 时长（PT30M / PT2H / P1D），其他格式报错",
+    "reminder 派生的 {节点id}_reminderEnd 只是提醒分支收尾，不代表流程结束；部署时不会在它前面注入 task_finish，因此超时提醒不会提前把业务任务置为完成",
+    "节点 / 连线 JSON 中未知的展示字段（画布尺寸、样式等）会被忽略，不影响转换"
+  ],
+  "runtimeVariables": {
+    "{节点id}_assignee": "approval 办理人，发起实例时传（模板显式 assignee 时不使用）",
+    "{节点id}_approverList": "countersign 审批人集合，发起实例时必传",
+    "{节点id}_approveMode": "countersign 审批模式；模板未固定时发起实例可传，缺省 ALL",
+    "{节点id}_passRate": "countersign 通过比例；模板未固定且 approveMode=VOTE 时发起实例传，范围 (0,1]",
+    "{节点id}_serviceName": "service 服务名称；模板未固定时发起实例传",
+    "{节点id}_serviceUrl": "service 服务地址；模板未固定时发起实例传",
+    "{节点id}_reminderDuration": "审批超时提醒时长（ISO-8601，如 PT30M）；模板未固定时发起实例传，缺省 P1D。提醒分支的外部任务 topic=timer，worker 可按该值做文案",
+    "vote": "完成会签任务时传：agree / reject",
+    "{节点id}_approved": "单人审批结果，完成任务时传 true / false（分支条件用到时必传）",
+    "{节点id}_passed": "会签 / 服务执行结果，由 VoteListener 或外部任务 worker 写入，业务无需传"
+  },
+  "example": {
+    "processId": "leave_approval",
+    "processName": "请假审批",
+    "nodes": [
+      { "id": "start", "type": "start", "name": "开始" },
+      {
+        "id": "apply",
+        "type": "approval",
+        "name": "申请审批",
+        "reminder": { "duration": "PT30M" }
+      },
+      { "id": "gw", "type": "condition", "name": "是否通过" },
+      {
+        "id": "managers",
+        "type": "countersign",
+        "name": "经理会签",
+        "sequential": false,
+        "approveMode": "ANY"
+      },
+      { "id": "end", "type": "end", "name": "结束" }
+    ],
+    "flows": [
+      { "source": "start", "target": "apply" },
+      { "source": "apply", "target": "gw" },
+      { "source": "gw", "target": "managers", "branch": "pass" },
+      { "source": "gw", "target": "end", "branch": "reject" },
+      { "source": "managers", "target": "end" }
+    ]
+  }
+}
