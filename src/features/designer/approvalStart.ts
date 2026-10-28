@@ -59,6 +59,27 @@ function parseStartupField(variable: TaskTemplateVariable, rawValue: string): un
   return value || undefined
 }
 
+function validateMetadataConstraints(
+  variable: TaskTemplateVariable,
+  value: unknown,
+): string | undefined {
+  if (typeof value === 'string' && variable.allowed?.length && !variable.allowed.includes(value)) {
+    return '“' + (variable.description?.trim() || variable.name) + '”不在模板允许范围内。'
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (variable.minimum !== undefined) {
+      const invalid = variable.exclusiveMinimum
+        ? value <= variable.minimum
+        : value < variable.minimum
+      if (invalid) return '“' + (variable.description?.trim() || variable.name) + '”低于允许范围。'
+    }
+    if (variable.maximum !== undefined && value > variable.maximum) {
+      return '“' + (variable.description?.trim() || variable.name) + '”超过允许范围。'
+    }
+  }
+  return undefined
+}
+
 export function validateApprovalStart(
   startVariables: TaskTemplateVariable[],
   fieldValues: StartupFieldValues,
@@ -89,6 +110,11 @@ export function validateApprovalStart(
     }
     if (Array.isArray(parsed) && new Set(parsed).size !== parsed.length) {
       errors.push('“' + label + '”中不能重复填写同一人员。')
+      continue
+    }
+    const constraintError = validateMetadataConstraints(variable, parsed)
+    if (constraintError) {
+      errors.push(constraintError)
       continue
     }
     if (Object.hasOwn(variables, variable.name)) {
