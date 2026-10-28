@@ -1,635 +1,1091 @@
-/**
- * Throwaway UI exploration: three structurally different workflow designer layouts
- * on /designer?variant=prototype-a|prototype-b|prototype-c.
- */
-import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Button, Input, Modal } from 'antd'
+/** Single-canvas workflow designer using the accepted A-layout prototype. */
+import { memo, useCallback, useMemo, useState, type DragEvent } from 'react'
 import {
-  ApartmentOutlined,
-  ArrowDownOutlined,
-  ArrowLeftOutlined,
-  ArrowRightOutlined,
-  CheckOutlined,
+  addEdge,
+  Background,
+  BackgroundVariant,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  NodeToolbar,
+  Position,
+  reconnectEdge,
+  ReactFlow,
+  ReactFlowProvider,
+  useEdgesState,
+  useNodesState,
+  useReactFlow,
+  type Connection,
+  type EdgeChange,
+  type NodeChange,
+  type NodeProps,
+} from '@xyflow/react'
+import {
+  ApiOutlined,
+  AuditOutlined,
+  BranchesOutlined,
+  CheckCircleOutlined,
   CodeOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DownloadOutlined,
+  FlagOutlined,
+  InfoCircleOutlined,
+  LinkOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
-  SettingOutlined,
+  TeamOutlined,
 } from '@ant-design/icons'
+import { Alert, Button, Form, Input, message, Modal, Select, Tag } from 'antd'
 import styles from './DesignerUiPrototype.module.less'
+import '@xyflow/react/dist/style.css'
+import {
+  toWorkflowModel,
+  supportsResultBranch,
+  validateWorkflowModel,
+  wouldCreateOrdinaryCycle,
+  type WorkflowCanvasEdge,
+  type WorkflowCanvasNode,
+  type WorkflowNodeData,
+  type WorkflowValidationIssue,
+} from './workflowModel'
 
-type NodeKind = 'start' | 'approval' | 'service' | 'condition' | 'end'
-type FlowNode = {
-  id: string
-  type: NodeKind
-  name: string
-  x: number
-  y: number
-  jsonX?: number
-  jsonY?: number
+type NodeKind = WorkflowCanvasNode['data']['kind']
+type CanvasNode = WorkflowCanvasNode
+type CanvasEdge = WorkflowCanvasEdge
+type PaletteItem = {
+  kind: NodeKind
+  title: string
+  summary: string
+  icon: typeof PlayCircleOutlined
 }
-type Layout = 'prototype-a' | 'prototype-b' | 'prototype-c'
 
-const variants: { key: Layout; letter: string; title: string; note: string }[] = [
-  { key: 'prototype-a', letter: 'A', title: '三栏属性面板', note: '节点库、画布、属性同时可见' },
-  { key: 'prototype-b', letter: 'B', title: '画布优先', note: '宽画布，配置从右侧展开' },
-  { key: 'prototype-c', letter: 'C', title: '底部属性舱', note: '流程全景与编辑区上下分层' },
+const paletteItems: PaletteItem[] = [
+  { kind: 'start', title: '开始', summary: '流程唯一入口', icon: PlayCircleOutlined },
+  { kind: 'approval', title: '审批', summary: '人工处理步骤', icon: AuditOutlined },
+  { kind: 'countersign', title: '会签', summary: '多人审批任务', icon: TeamOutlined },
+  { kind: 'service', title: '服务调用', summary: '调用业务服务', icon: ApiOutlined },
+  { kind: 'condition', title: '条件分支', summary: '按结果选择路径', icon: BranchesOutlined },
+  { kind: 'end', title: '结束', summary: '流程完成出口', icon: FlagOutlined },
 ]
 
-const initialNodes: FlowNode[] = [
-  { id: 'start', type: 'start', name: '发起', x: 12, y: 43, jsonX: 100, jsonY: 165 },
-  { id: 'apply', type: 'approval', name: '出库申请', x: 31, y: 43, jsonX: 180, jsonY: 145 },
-  { id: 'check_stock', type: 'service', name: '库存校验', x: 50, y: 43, jsonX: 340, jsonY: 145 },
+const configuredApproveModes = new Set(['ALL', 'ANY', 'VOTE'])
+
+const initialNodes: CanvasNode[] = [
+  {
+    id: 'start',
+    type: 'workflowNode',
+    position: { x: 20, y: 190 },
+    data: { kind: 'start', name: '发起' },
+  },
+  {
+    id: 'apply',
+    type: 'workflowNode',
+    position: { x: 170, y: 190 },
+    data: { kind: 'approval', name: '出库申请' },
+  },
+  {
+    id: 'managers',
+    type: 'workflowNode',
+    position: { x: 330, y: 190 },
+    data: { kind: 'countersign', name: '部门经理会签', approveMode: 'ALL' },
+  },
+  {
+    id: 'check_stock',
+    type: 'workflowNode',
+    position: { x: 490, y: 190 },
+    data: {
+      kind: 'service',
+      name: '库存校验',
+      serviceName: '库存服务',
+    },
+  },
   {
     id: 'gwMinister',
-    type: 'condition',
-    name: '库存校验结果',
-    x: 69,
-    y: 43,
-    jsonX: 500,
-    jsonY: 160,
+    type: 'workflowNode',
+    position: { x: 650, y: 200 },
+    data: { kind: 'condition', name: '库存校验结果' },
   },
-  { id: 'end', type: 'end', name: '结束', x: 88, y: 43, jsonX: 860, jsonY: 165 },
+  {
+    id: 'end',
+    type: 'workflowNode',
+    position: { x: 810, y: 190 },
+    data: { kind: 'end', name: '结束' },
+  },
 ]
 
-const nodeCopy: Record<NodeKind, { label: string; short: string; color: string }> = {
-  start: { label: '开始', short: '始', color: 'mint' },
-  approval: { label: '审批', short: '审', color: 'blue' },
-  service: { label: '服务调用', short: '服', color: 'orange' },
-  condition: { label: '条件分支', short: '◇', color: 'violet' },
-  end: { label: '结束', short: '终', color: 'slate' },
+const initialEdges: CanvasEdge[] = [
+  {
+    id: 'start-apply',
+    source: 'start',
+    target: 'apply',
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+  {
+    id: 'apply-service',
+    source: 'apply',
+    target: 'managers',
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+  {
+    id: 'managers-service',
+    source: 'managers',
+    target: 'check_stock',
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+  {
+    id: 'service-result',
+    source: 'check_stock',
+    target: 'gwMinister',
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+  {
+    id: 'result-end',
+    source: 'gwMinister',
+    target: 'end',
+    type: 'smoothstep',
+    label: '通过',
+    data: { branch: 'pass' },
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+  {
+    id: 'result-apply',
+    source: 'gwMinister',
+    target: 'apply',
+    type: 'smoothstep',
+    label: '驳回',
+    className: 'branch-reject',
+    data: { branch: 'reject' },
+    markerEnd: { type: MarkerType.ArrowClosed },
+  },
+]
+
+const kindMeta: Record<NodeKind, { label: string; tone: string; icon: typeof PlayCircleOutlined }> =
+  {
+    start: { label: '流程入口', tone: 'start', icon: PlayCircleOutlined },
+    approval: { label: '人工审批', tone: 'approval', icon: AuditOutlined },
+    countersign: { label: '多人任务', tone: 'countersign', icon: TeamOutlined },
+    service: { label: '服务调用', tone: 'service', icon: ApiOutlined },
+    condition: { label: '结果判断', tone: 'condition', icon: BranchesOutlined },
+    end: { label: '流程出口', tone: 'end', icon: FlagOutlined },
+  }
+
+const nodeTypes = { workflowNode: memo(WorkflowNodeView) }
+const fitViewOptions = { padding: 0.04, maxZoom: 1.15 }
+const defaultEdgeOptions = {
+  type: 'smoothstep' as const,
+  markerEnd: { type: MarkerType.ArrowClosed },
 }
 
-export function DesignerUiPrototype() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const layout = (
-    variants.some((variant) => variant.key === searchParams.get('variant'))
-      ? searchParams.get('variant')
-      : 'prototype-a'
-  ) as Layout
-  const [nodes, setNodes] = useState(initialNodes)
-  const [selectedId, setSelectedId] = useState('check_stock')
+function getMiniMapNodeColor(node: CanvasNode): string {
+  return node.data.kind === 'service'
+    ? '#d9813e'
+    : node.data.kind === 'condition'
+      ? '#8e7ab5'
+      : '#7ca58e'
+}
+
+function WorkflowNodeView({ data, selected, isConnectable }: NodeProps<CanvasNode>) {
+  const meta = kindMeta[data.kind]
+  const Icon = meta.icon
+  return (
+    <>
+      {data.kind === 'condition' && (
+        <NodeToolbar
+          isVisible={selected}
+          position={Position.Top}
+          className={styles.conditionToolbar}
+        >
+          <span>结果路径</span>
+          <span>选中画布连线配置通过 / 驳回</span>
+        </NodeToolbar>
+      )}
+      <div className={styles.flowNode + (selected ? ' ' + styles.flowNodeSelected : '')}>
+        {data.kind !== 'start' && (
+          <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
+        )}
+        <span className={styles.nodeIcon + ' ' + styles['nodeIcon' + meta.tone]}>
+          <Icon aria-hidden="true" />
+        </span>
+        <span className={styles.nodeCopy}>
+          <strong>{data.name}</strong>
+          <small>
+            {data.kind === 'service'
+              ? data.serviceUrl?.trim()
+                ? '固定服务地址'
+                : '动态服务地址'
+              : data.kind === 'countersign'
+                ? data.approveMode === 'ANY'
+                  ? '或签 · 任一人通过'
+                  : data.approveMode === 'VOTE'
+                    ? '比例会签 · 按通过比例判断'
+                    : !data.approveMode || !configuredApproveModes.has(data.approveMode)
+                      ? '模式未固化'
+                      : '会签 · 所有人通过'
+                : meta.label}
+          </small>
+        </span>
+        {data.kind === 'condition' && <span className={styles.conditionMark}>◇</span>}
+        {data.kind !== 'end' && (
+          <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
+        )}
+      </div>
+    </>
+  )
+}
+
+function DesignerUiPrototypeContent() {
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>(initialNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>(initialEdges)
+  const [selectedNodeId, setSelectedNodeId] = useState('check_stock')
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [processId, setProcessId] = useState('service-approval')
   const [processName, setProcessName] = useState('服务调用')
-  const [serviceName, setServiceName] = useState('库存服务')
-  const [serviceUrl, setServiceUrl] = useState('http://127.0.0.1:8080/api/stock/check')
   const [jsonOpen, setJsonOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [dragging, setDragging] = useState<string | null>(null)
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  const [boardWidth, setBoardWidth] = useState(640)
-  const [notice, setNotice] = useState('所有步骤都连接到流程中')
-  const boardRef = useRef<HTMLDivElement>(null)
+  const [checkOpen, setCheckOpen] = useState(false)
+  const [jsonCopied, setJsonCopied] = useState(false)
+  const [checked, setChecked] = useState(false)
+  const { screenToFlowPosition, getNodes, fitView } = useReactFlow<CanvasNode, CanvasEdge>()
 
-  useEffect(() => {
-    const board = boardRef.current
-    if (!board) return
-    const observer = new ResizeObserver(([entry]) => setBoardWidth(entry.contentRect.width || 640))
-    observer.observe(board)
-    return () => observer.disconnect()
-  }, [layout])
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0]
+  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId)
+  const edgeSource = selectedEdge
+    ? nodes.find((node) => node.id === selectedEdge.source)
+    : undefined
+  const edgeTarget = selectedEdge
+    ? nodes.find((node) => node.id === selectedEdge.target)
+    : undefined
+  const serviceData = selectedNode.data.kind === 'service' ? selectedNode.data : undefined
+  const dynamicService = Boolean(serviceData && !serviceData.serviceUrl?.trim())
 
-  const selected = nodes.find((node) => node.id === selectedId) || nodes[2]
+  const updateNodeData = useCallback(
+    (patch: Partial<WorkflowNodeData>) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === selectedNodeId ? { ...node, data: { ...node.data, ...patch } } : node,
+        ),
+      )
+      setChecked(false)
+    },
+    [selectedNodeId, setNodes],
+  )
+
   const model = useMemo(
-    () => ({
-      processId,
-      processName,
-      nodes: nodes.map((node) => {
-        const base = {
-          id: node.id,
-          type: node.type,
-          name: node.name,
-          x: node.jsonX ?? Math.round((node.x / 100) * 940),
-          y: node.jsonY ?? Math.round((node.y / 100) * 510),
-        }
-        if (node.type === 'service' && serviceUrl.trim()) {
-          return {
-            ...base,
-            serviceName: serviceName.trim() || '业务服务',
-            serviceUrl: serviceUrl.trim(),
-          }
-        }
-        return base
-      }),
-      flows: [
-        { source: 'start', target: 'apply' },
-        { source: 'apply', target: 'check_stock' },
-        { source: 'check_stock', target: 'gwMinister' },
-        { source: 'gwMinister', target: 'end', branch: 'pass' },
-        { source: 'gwMinister', target: 'apply', branch: 'reject' },
-      ],
-    }),
-    [nodes, processId, processName, serviceName, serviceUrl],
+    () => toWorkflowModel(processId, processName, nodes, edges),
+    [edges, nodes, processId, processName],
   )
   const json = JSON.stringify(model, null, 2)
+  const issues = useMemo(() => validateWorkflowModel(model), [model])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLElement && /INPUT|TEXTAREA|BUTTON/.test(event.target.tagName))
+  const addNode = useCallback(
+    (kind: NodeKind, position?: { x: number; y: number }) => {
+      if (
+        (kind === 'start' || kind === 'end') &&
+        getNodes().some((node) => node.data.kind === kind)
+      ) {
+        message.info(kind === 'start' ? '一个流程只能有一个开始节点' : '一个流程只能有一个结束节点')
         return
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-      const index = variants.findIndex((variant) => variant.key === layout)
-      const next =
-        variants[(index + (event.key === 'ArrowRight' ? 1 : variants.length - 1)) % variants.length]
-      setSearchParams({ variant: next.key })
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [layout, setSearchParams])
+      }
+      setSelectedEdgeId(null)
+      const id = kind + '_' + Math.random().toString(36).slice(2, 7)
+      const node: CanvasNode = {
+        id,
+        type: 'workflowNode',
+        position: position ?? { x: 360 + Math.random() * 120, y: 90 + Math.random() * 180 },
+        data: {
+          kind,
+          name: kind === 'service' ? '新建服务' : kindMeta[kind].label,
+          ...(kind === 'countersign' ? { approveMode: 'ALL' as const } : {}),
+        },
+      }
+      setNodes((current) => [...current, node])
+      setSelectedNodeId(id)
+      setChecked(false)
+    },
+    [getNodes, setNodes],
+  )
 
-  const changeLayout = (key: Layout) => setSearchParams({ variant: key })
-  const addNode = (type: NodeKind, position?: Partial<FlowNode>) => {
-    if ((type === 'start' || type === 'end') && nodes.some((node) => node.type === type)) {
-      setNotice('开始和结束节点在一个流程中各保留一个')
-      return
-    }
-    const id = type + '_' + Math.random().toString(36).slice(2, 6)
-    const node: FlowNode = {
-      id,
-      type,
-      name: type === 'service' ? '新建服务' : nodeCopy[type].label,
-      x: 54,
-      y: 72,
-      ...position,
-    }
-    setNodes((current) => [...current, node])
-    setSelectedId(id)
-    setNotice('已添加“' + node.name + '”，可拖动到合适位置')
-  }
-  const updateSelected = (patch: Partial<FlowNode>) => {
-    setNodes((current) =>
-      current.map((node) => (node.id === selectedId ? { ...node, ...patch } : node)),
-    )
-  }
-  const onNodePointerDown = (event: PointerEvent<HTMLDivElement>, id: string) => {
-    if ((event.target as HTMLElement).closest('button')) return
-    event.preventDefault()
-    setSelectedId(id)
-    setDragging(id)
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
-  const onNodePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (!dragging || !boardRef.current) return
-    const rect = boardRef.current.getBoundingClientRect()
-    const x = Math.max(5, Math.min(94, ((event.clientX - rect.left) / rect.width) * 100))
-    const y = Math.max(12, Math.min(84, ((event.clientY - rect.top) / rect.height) * 100))
-    setNodes((current) =>
-      current.map((node) =>
-        node.id === dragging
-          ? {
-              ...node,
-              x,
-              y,
-              jsonX: Math.round(100 + ((x - 9) / 80) * 760),
-              jsonY: Math.round(145 + ((y - 43) / 5) * 25),
-            }
-          : node,
-      ),
-    )
-  }
-  const onPaletteDragStart = (event: DragEvent<HTMLButtonElement>, type: NodeKind) => {
-    event.dataTransfer.setData('application/x-workflow-node', type)
-    event.dataTransfer.effectAllowed = 'copy'
-  }
-  const onBoardDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    const type = event.dataTransfer.getData('application/x-workflow-node') as NodeKind
-    if (!['start', 'approval', 'service', 'condition', 'end'].includes(type) || !boardRef.current)
-      return
-    const rect = boardRef.current.getBoundingClientRect()
-    const x = Math.max(9, Math.min(89, ((event.clientX - rect.left) / rect.width) * 100))
-    const y = Math.max(14, Math.min(82, ((event.clientY - rect.top) / rect.height) * 100))
-    addNode(type, {
-      x,
-      y,
-      jsonX: Math.round(100 + ((x - 9) / 80) * 760),
-      jsonY: Math.round(145 + ((y - 43) / 5) * 25),
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      setEdges((current) => {
+        const source = nodes.find((node) => node.id === connection.source)
+        const target = nodes.find((node) => node.id === connection.target)
+        const sourceIsCondition = source?.data.kind === 'condition'
+        const targetIsCondition = target?.data.kind === 'condition'
+        const closesCycle = Boolean(
+          source && target && wouldCreateOrdinaryCycle(current, source.id, target.id),
+        )
+        const outgoingBranches = sourceIsCondition
+          ? new Set(
+              current
+                .filter((edge) => edge.source === connection.source)
+                .map((edge) => edge.data?.branch)
+                .filter((branch): branch is 'pass' | 'reject' => Boolean(branch)),
+            )
+          : new Set<'pass' | 'reject'>()
+        const branch =
+          closesCycle && source && supportsResultBranch(source.data.kind)
+            ? 'reject'
+            : sourceIsCondition && !targetIsCondition
+              ? !outgoingBranches.has('pass')
+                ? 'pass'
+                : !outgoingBranches.has('reject')
+                  ? 'reject'
+                  : undefined
+              : undefined
+        const label = branch === 'pass' ? '通过' : branch === 'reject' ? '驳回' : undefined
+        return addEdge(
+          {
+            ...connection,
+            type: 'smoothstep',
+            ...(branch
+              ? {
+                  label,
+                  className: branch === 'pass' ? 'branch-pass' : 'branch-reject',
+                  data: { branch },
+                }
+              : {}),
+            markerEnd: { type: MarkerType.ArrowClosed },
+          },
+          current,
+        )
+      })
+      setChecked(false)
+    },
+    [nodes, setEdges],
+  )
+
+  const updateEdgeBranch = (branch: 'pass' | 'reject' | undefined) => {
+    if (!selectedEdge) return
+    const label = branch === 'pass' ? '通过' : branch === 'reject' ? '驳回' : undefined
+    const sourceIsCondition =
+      nodes.find((node) => node.id === selectedEdge.source)?.data.kind === 'condition'
+    setEdges((current) => {
+      return current.map((edge) => {
+        if (edge.id === selectedEdge.id) {
+          return {
+            ...edge,
+            label,
+            className:
+              branch === 'reject' ? 'branch-reject' : branch === 'pass' ? 'branch-pass' : '',
+            data: {
+              ...(branch ? { branch } : {}),
+              ...(edge.data?.conditionExpression
+                ? { conditionExpression: edge.data.conditionExpression }
+                : {}),
+            },
+          }
+        }
+        if (
+          sourceIsCondition &&
+          branch &&
+          edge.source === selectedEdge.source &&
+          edge.data?.branch === branch
+        ) {
+          return {
+            ...edge,
+            data: edge.data?.conditionExpression
+              ? { conditionExpression: edge.data.conditionExpression }
+              : {},
+            label: undefined,
+            className: '',
+          }
+        }
+        return edge
+      })
     })
+    setChecked(false)
   }
+
+  const onPaletteDragStart = useCallback((event: DragEvent<HTMLButtonElement>, kind: NodeKind) => {
+    event.dataTransfer.setData('application/x-workflow-node', kind)
+    event.dataTransfer.effectAllowed = 'copy'
+  }, [])
+
+  const onReconnect = useCallback(
+    (oldEdge: CanvasEdge, connection: Connection) => {
+      if (!connection.source || !connection.target || connection.source === connection.target)
+        return
+      if (nodes.some((node) => node.id === connection.target && node.data.kind === 'start')) return
+      if (nodes.some((node) => node.id === connection.source && node.data.kind === 'end')) return
+      if (
+        edges.some(
+          (edge) =>
+            edge.id !== oldEdge.id &&
+            edge.source === connection.source &&
+            edge.target === connection.target,
+        )
+      )
+        return
+      const source = nodes.find((node) => node.id === connection.source)
+      const closesCycle = wouldCreateOrdinaryCycle(
+        edges,
+        connection.source,
+        connection.target,
+        oldEdge.id,
+      )
+      if (closesCycle && (!source || !supportsResultBranch(source.data.kind))) return
+      setEdges((current) => {
+        const reconnected = reconnectEdge(oldEdge, connection, current)
+        return closesCycle
+          ? reconnected.map((edge) =>
+              edge.source === connection.source && edge.target === connection.target
+                ? {
+                    ...edge,
+                    label: '驳回',
+                    className: 'branch-reject',
+                    data: { ...edge.data, branch: 'reject' },
+                  }
+                : edge,
+            )
+          : reconnected
+      })
+      setChecked(false)
+    },
+    [edges, nodes, setEdges],
+  )
+
+  const onCanvasDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      const kind = event.dataTransfer.getData('application/x-workflow-node') as NodeKind
+      if (!['start', 'approval', 'countersign', 'service', 'condition', 'end'].includes(kind))
+        return
+      addNode(kind, screenToFlowPosition({ x: event.clientX, y: event.clientY }))
+    },
+    [addNode, screenToFlowPosition],
+  )
+
   const copyJson = async () => {
     await navigator.clipboard?.writeText(json)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+    setJsonCopied(true)
+    window.setTimeout(() => setJsonCopied(false), 1500)
   }
+
   const downloadJson = () => {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = processId + '.json'
+    anchor.download = (processId || 'workflow') + '.json'
     anchor.click()
     URL.revokeObjectURL(url)
   }
 
-  const palette = (compact = false) => (
-    <aside className={styles.palette + (compact ? ' ' + styles.paletteCompact : '')}>
-      <div className={styles.panelTitle}>
-        <span>节点库</span>
-        <small>拖放或点选添加</small>
-      </div>
-      {(['start', 'approval', 'service', 'condition', 'end'] as NodeKind[]).map((type) => (
-        <button
-          className={styles.paletteItem}
-          draggable
-          onDragStart={(event) => onPaletteDragStart(event, type)}
-          key={type}
-          onClick={() => addNode(type)}
-          type="button"
-        >
-          <span className={styles['icon' + nodeCopy[type].color]}>{nodeCopy[type].short}</span>
-          <span>
-            <b>{nodeCopy[type].label}</b>
-            <small>
-              {type === 'service'
-                ? '调用业务系统'
-                : type === 'approval'
-                  ? '人工处理步骤'
-                  : type === 'condition'
-                    ? '按结果选择路径'
-                    : type === 'start'
-                      ? '流程入口'
-                      : '流程出口'}
-            </small>
-          </span>
-          <PlusOutlined />
-        </button>
-      ))}
-      <div className={styles.paletteTip}>
-        <ArrowDownOutlined /> 拖动画布节点可以调整位置
-      </div>
-    </aside>
-  )
+  const checkFlow = useCallback(() => {
+    setChecked(true)
+    setCheckOpen(true)
+    if (issues.length)
+      message.warning('流程检查发现 ' + issues.length + ' 项问题，请查看检查结果。')
+    else message.success('流程检查通过')
+  }, [issues.length])
 
-  const properties = (compact = false) => (
-    <aside className={styles.properties + (compact ? ' ' + styles.propertiesCompact : '')}>
-      <div className={styles.panelTitle}>
-        <span>步骤属性</span>
-        <small>{nodeCopy[selected.type].label}</small>
-      </div>
-      <label className={styles.fieldLabel}>步骤名称</label>
-      <Input
-        value={selected.name}
-        onChange={(event) => updateSelected({ name: event.target.value })}
-      />
-      {selected.type === 'service' ? (
-        <>
-          <div className={styles.fieldLabel}>服务地址</div>
-          <Input
-            value={serviceUrl}
-            onChange={(event) => setServiceUrl(event.target.value)}
-            placeholder="留空：发起流程时动态提供"
-            aria-label="服务地址"
-          />
-          {serviceUrl.trim() ? (
-            <>
-              <label className={styles.fieldLabel}>服务名称</label>
-              <Input
-                value={serviceName}
-                onChange={(event) => setServiceName(event.target.value)}
-                placeholder="例如：库存服务"
-              />
-              <div className={styles.modeFixed}>
-                <span /> 固定服务地址 <small>随流程定义编译</small>
-              </div>
-            </>
-          ) : (
-            <div className={styles.modeDynamic}>
-              <span /> 动态服务地址 <small>在发起流程时填写</small>
-            </div>
-          )}
-          <div className={styles.helper}>
-            服务由流程引擎运行时调用。地址配置只影响服务节点，不会改变通过和驳回路径。
-          </div>
-        </>
-      ) : (
-        <div className={styles.helper}>
-          节点名称会写入业务模型。画布上的连接关系决定流程的实际走向。
-        </div>
-      )}
-      <div className={styles.nodeMeta}>
-        <span>节点标识</span>
-        <code>{selected.id}</code>
-      </div>
-      {selected.type !== 'start' && selected.type !== 'end' && (
-        <button
-          className={styles.deleteNode}
-          onClick={() => {
-            setNodes((current) => current.filter((node) => node.id !== selectedId))
-            setSelectedId('check_stock')
-          }}
-          type="button"
-        >
-          移除此步骤
-        </button>
-      )}
-    </aside>
-  )
-
-  const board = (wide = false, bottom = false) => (
-    <div
-      className={
-        styles.board +
-        (wide ? ' ' + styles.boardWide : '') +
-        (bottom ? ' ' + styles.boardBottom : '')
+  const updateProcessName = useCallback((value: string) => {
+    setProcessName(value)
+    setChecked(false)
+  }, [])
+  const updateProcessId = useCallback((value: string) => {
+    setProcessId(value)
+    setChecked(false)
+  }, [])
+  const handleCanvasChange = useCallback(() => setChecked(false), [])
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      onNodesChange(changes)
+      const removedNodeIds = new Set(
+        changes.flatMap((change) => (change.type === 'remove' ? [change.id] : [])),
+      )
+      if (removedNodeIds.size) {
+        setEdges((current) =>
+          current.filter(
+            (edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target),
+          ),
+        )
+        setChecked(false)
       }
-      ref={boardRef}
-      onPointerMove={onNodePointerMove}
-      onPointerUp={() => setDragging(null)}
-      onPointerCancel={() => setDragging(null)}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={onBoardDrop}
-    >
-      <svg
-        className={styles.wires}
-        viewBox="0 0 1000 560"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <defs>
-          <marker id="proto-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L8,4 L0,8 z" fill="#93a79c" />
-          </marker>
-        </defs>
-        {nodes
-          .filter((node) => ['start', 'apply', 'check_stock'].includes(node.id))
-          .map((node) => {
-            const nextId =
-              node.id === 'start' ? 'apply' : node.id === 'apply' ? 'check_stock' : 'gwMinister'
-            const next = nodes.find((item) => item.id === nextId)
-            if (!next) return null
-            const gap = Math.min(92, 5200 / boardWidth)
-            const sourceX = layout === 'prototype-b' ? node.x * 0.65 + 5 : node.x
-            const targetX = layout === 'prototype-b' ? next.x * 0.65 + 5 : next.x
-            return (
-              <path
-                key={node.id}
-                d={
-                  'M ' +
-                  (sourceX * 10 + gap) +
-                  ' ' +
-                  node.y * 5.6 +
-                  ' L ' +
-                  (targetX * 10 - gap) +
-                  ' ' +
-                  next.y * 5.6
-                }
-                markerEnd="url(#proto-arrow)"
-              />
-            )
-          })}
-        {nodes.some((node) => node.id === 'gwMinister') &&
-          nodes.some((node) => node.id === 'end') && (
-            <path
-              d={
-                'M ' +
-                (nodes.find((node) => node.id === 'gwMinister')!.x * 10 + 55) +
-                ' 240 C 780 240 820 240 ' +
-                (nodes.find((node) => node.id === 'end')!.x * 10 - 55) +
-                ' 240'
-              }
-              markerEnd="url(#proto-arrow)"
-            />
-          )}
-        {nodes.some((node) => node.id === 'gwMinister') &&
-          nodes.some((node) => node.id === 'apply') && (
-            <path
-              className={styles.rejectWire}
-              d={
-                'M ' +
-                nodes.find((node) => node.id === 'gwMinister')!.x * 10 +
-                ' 270 C 690 500 300 500 ' +
-                nodes.find((node) => node.id === 'apply')!.x * 10 +
-                ' 270'
-              }
-              markerEnd="url(#proto-arrow)"
-            />
-          )}
-      </svg>
-      <div className={styles.branchTag} style={{ left: '78%', top: '36%' }}>
-        通过
-      </div>
-      <div className={styles.rejectTag} style={{ left: '52%', top: '81%' }}>
-        驳回 · 返回申请
-      </div>
-      {nodes.map((node) => (
-        <div
-          aria-label={node.name}
-          className={styles.flowNode + (selectedId === node.id ? ' ' + styles.nodeSelected : '')}
-          key={node.id}
-          onPointerDown={(event) => onNodePointerDown(event, node.id)}
-          onPointerUp={() => setDragging(null)}
-          style={{
-            left: (layout === 'prototype-b' ? node.x * 0.65 + 5 : node.x) + '%',
-            top: node.y + '%',
-          }}
-          role="button"
-          tabIndex={0}
-          onClick={() => setSelectedId(node.id)}
-        >
-          <span className={styles['nodeIcon' + nodeCopy[node.type].color]}>
-            {nodeCopy[node.type].short}
-          </span>
-          <span className={styles.nodeText}>
-            <b>{node.name}</b>
-            <small>
-              {node.type === 'service'
-                ? serviceUrl.trim()
-                  ? '固定地址'
-                  : '动态地址'
-                : nodeCopy[node.type].label}
-            </small>
-          </span>
-          <span className={styles.nodePort} />
-        </div>
-      ))}
-      <div className={styles.zoomControls}>
-        <button type="button" aria-label="缩小">
-          −
-        </button>
-        <span>100%</span>
-        <button type="button" aria-label="放大">
-          ＋
-        </button>
-        <i />
-        <button type="button" aria-label="适应画布">
-          ⌗
-        </button>
-      </div>
-      <div className={styles.mapHint}>点选步骤查看属性 · 拖动步骤调整位置</div>
-    </div>
+    },
+    [onNodesChange, setEdges],
   )
 
-  const currentVariant = variants.find((variant) => variant.key === layout)!
+  const isValidConnection = useCallback(
+    (connection: { source: string; target: string }) => {
+      if (!connection.source || !connection.target || connection.source === connection.target)
+        return false
+      if (
+        edges.some((edge) => edge.source === connection.source && edge.target === connection.target)
+      )
+        return false
+      const source = nodes.find((node) => node.id === connection.source)
+      const target = nodes.find((node) => node.id === connection.target)
+      if (!source || !target || source.data.kind === 'end' || target.data.kind === 'start')
+        return false
+      if (source.data.kind === 'condition' && target.data.kind === 'condition') return false
+      return (
+        supportsResultBranch(source.data.kind) ||
+        !wouldCreateOrdinaryCycle(edges, connection.source, connection.target)
+      )
+    },
+    [edges, nodes],
+  )
+
+  const locateIssue = useCallback(
+    (issue: WorkflowValidationIssue) => {
+      const edgeIndex = issue.edgeId ? Number(issue.edgeId.replace(/^flow_/, '')) : -1
+      if (issue.nodeId) setSelectedNodeId(issue.nodeId)
+      const edge = edgeIndex >= 0 ? edges[edgeIndex] : undefined
+      if (edge) setSelectedEdgeId(edge.id)
+      const targetNodes = issue.nodeId
+        ? [{ id: issue.nodeId }]
+        : edge
+          ? [{ id: edge.source }, { id: edge.target }]
+          : []
+      if (targetNodes.length) void fitView({ nodes: targetNodes, padding: 0.5, duration: 250 })
+    },
+    [edges, fitView],
+  )
+
   return (
     <section className={styles.prototype}>
-      <div className={styles.pageHeading}>
+      <header className={styles.pageHeading}>
         <div className={styles.titleGroup}>
           <div className={styles.crumb}>
-            <ApartmentOutlined /> 流程设计 <span>/</span> 新建业务流程
+            <span className={styles.crumbIcon}>
+              <BranchesOutlined />
+            </span>{' '}
+            流程设计 <span className={styles.crumbSlash}>/</span> 新建业务流程
           </div>
           <div className={styles.titleLine}>
             <Input
               className={styles.processTitle}
               value={processName}
-              onChange={(event) => setProcessName(event.target.value)}
+              onChange={(event) => updateProcessName(event.target.value)}
               aria-label="流程名称"
             />
-            <span className={styles.draftPill}>
+            <Tag className={styles.draftTag}>
               <i /> 草稿
-            </span>
+            </Tag>
           </div>
           <div className={styles.processCode}>
-            流程标识{' '}
+            <span>流程标识</span>
             <Input
               value={processId}
-              onChange={(event) => setProcessId(event.target.value)}
+              onChange={(event) => updateProcessId(event.target.value)}
               aria-label="流程标识"
             />
           </div>
         </div>
         <div className={styles.topActions}>
-          <span className={styles.savedNote}>
-            <CheckOutlined /> 所有更改仅保存在本页
+          <span className={styles.saveHint}>
+            <CheckCircleOutlined /> 修改保存在本页
           </span>
           <Button icon={<CodeOutlined />} onClick={() => setJsonOpen(true)}>
             查看业务 JSON
           </Button>
-          <Button
-            type="primary"
-            icon={<CheckOutlined />}
-            onClick={() => setNotice('流程结构可继续送后端编译')}
-          >
+          <Button type="primary" icon={<CheckCircleOutlined />} onClick={checkFlow}>
             检查流程
           </Button>
         </div>
-      </div>
+      </header>
+
       <div className={styles.statusLine}>
-        <span className={styles.statusDot} /> {notice}
+        <span className={styles.statusIndicator + (checked ? ' ' + styles.statusSuccess : '')} />
+        <span>
+          {checked
+            ? '流程基础结构检查通过'
+            : '从左侧添加步骤；连接节点右侧与左侧的圆点，设置业务路径'}
+        </span>
         <span className={styles.statusRight}>
-          5 个步骤 <b>·</b> 5 条路径
+          {nodes.length} 个节点 <b>·</b> {edges.length} 条连线
         </span>
       </div>
-
-      {layout === 'prototype-a' && (
-        <div className={styles.workbenchA}>
-          {palette()}
-          <div className={styles.canvasColumn}>
-            <div className={styles.canvasHeading}>
-              <b>流程画布</b>
-              <span>选择节点并连出业务路径</span>
-              <button
-                type="button"
-                onClick={() => setNotice('流程从左向右执行，拒绝路径以虚线显示')}
-              >
-                路径说明
-              </button>
-            </div>
-            {board()}
-          </div>
-          {properties()}
-        </div>
-      )}
-      {layout === 'prototype-b' && (
-        <div className={styles.workbenchB}>
-          <div className={styles.canvasHeading}>
-            <b>流程画布</b>
-            <span>画布优先 · 选中步骤后从右侧编辑</span>
-            <div className={styles.addMenu}>
-              <Button
-                size="small"
-                icon={<PlusOutlined />}
-                onClick={() => setPaletteOpen((open) => !open)}
-              >
-                添加步骤
-              </Button>
-              {paletteOpen && palette(true)}
-            </div>
-          </div>
-          {board(true)}
-          <div className={styles.propertiesDrawer}>{properties()}</div>
-        </div>
-      )}
-      {layout === 'prototype-c' && (
-        <div className={styles.workbenchC}>
-          <div className={styles.mapToolbar}>
+      <div className={styles.workbench}>
+        <aside className={styles.palette} aria-label="节点库">
+          <div className={styles.panelHeading}>
             <div>
-              <b>流程地图</b>
-              <span>全景布局 · 点击步骤在下方编辑</span>
+              <h2>节点库</h2>
+              <p>拖入画布或点击添加</p>
             </div>
-            <div className={styles.mapTools}>
-              <button type="button" onClick={() => addNode('service')}>
-                <PlusOutlined /> 加服务步骤
-              </button>
-              <button type="button">
-                <SettingOutlined />
-              </button>
-            </div>
+            <span className={styles.panelCount}>{paletteItems.length}</span>
           </div>
-          <div className={styles.mapStage}>
-            <div className={styles.paletteRail}>
-              {(['start', 'approval', 'service', 'condition', 'end'] as NodeKind[]).map((type) => (
+          <div className={styles.paletteGroup}>流程节点</div>
+          <div className={styles.paletteList}>
+            {paletteItems.map((item) => {
+              const Icon = item.icon
+              const singleton =
+                (item.kind === 'start' || item.kind === 'end') &&
+                nodes.some((node) => node.data.kind === item.kind)
+              return (
                 <button
-                  aria-label={'添加' + nodeCopy[type].label}
-                  key={type}
-                  onClick={() => addNode(type)}
+                  className={styles.paletteItem}
+                  disabled={singleton}
+                  draggable={!singleton}
+                  onDragStart={(event) => onPaletteDragStart(event, item.kind)}
+                  onClick={() => addNode(item.kind)}
+                  key={item.kind}
                   type="button"
                 >
-                  <span className={styles['icon' + nodeCopy[type].color]}>
-                    {nodeCopy[type].short}
+                  <span
+                    className={
+                      styles.paletteGlyph + ' ' + styles['glyph' + kindMeta[item.kind].tone]
+                    }
+                  >
+                    <Icon aria-hidden="true" />
                   </span>
+                  <span className={styles.paletteCopy}>
+                    <strong>{item.title}</strong>
+                    <small>{item.summary}</small>
+                  </span>
+                  {singleton ? (
+                    <span className={styles.addedMark} aria-label="已添加">
+                      ✓
+                    </span>
+                  ) : (
+                    <PlusOutlined className={styles.palettePlus} aria-hidden="true" />
+                  )}
                 </button>
-              ))}
-            </div>
-            <div className={styles.mapCanvas}>{board(true, true)}</div>
+              )
+            })}
           </div>
-          <div className={styles.bottomInspector}>{properties(true)}</div>
-        </div>
-      )}
+          <div className={styles.paletteGuide}>
+            <span>
+              <InfoCircleOutlined />
+            </span>
+            <p>点按可添加节点；从画布节点的连接点拖出路径。</p>
+          </div>
+          <div className={styles.paletteFooter}>
+            <span className={styles.footerDot} /> 业务节点 · 不包含引擎配置
+          </div>
+        </aside>
 
-      <div className={styles.prototypeDock} aria-label="设计稿切换">
-        <button
-          aria-label="上一稿"
-          onClick={() =>
-            changeLayout(
-              variants[(variants.findIndex((variant) => variant.key === layout) + 2) % 3].key,
-            )
-          }
-          type="button"
-        >
-          <ArrowLeftOutlined />
-        </button>
-        <div className={styles.dockLabel}>
-          <b>{currentVariant.letter}</b>
-          <span>
-            {currentVariant.title}
-            <small>{currentVariant.note}</small>
-          </span>
-        </div>
-        <div className={styles.dockChoices}>
-          {variants.map((variant) => (
-            <button
-              aria-label={variant.title}
-              aria-pressed={layout === variant.key}
-              className={layout === variant.key ? styles.dockActive : ''}
-              key={variant.key}
-              onClick={() => changeLayout(variant.key)}
-              type="button"
-            >
-              {variant.letter}
-            </button>
-          ))}
-        </div>
-        <button
-          aria-label="下一稿"
-          onClick={() =>
-            changeLayout(
-              variants[(variants.findIndex((variant) => variant.key === layout) + 1) % 3].key,
-            )
-          }
-          type="button"
-        >
-          <ArrowRightOutlined />
-        </button>
+        <main className={styles.canvasColumn}>
+          <div className={styles.canvasHeading}>
+            <div>
+              <h2>流程画布</h2>
+              <span>选择节点编辑属性，拖动可调整位置</span>
+            </div>
+            <Button size="small" icon={<PlusOutlined />} onClick={() => addNode('service')}>
+              添加服务
+            </Button>
+          </div>
+          <div
+            className={styles.canvasWrap}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={onCanvasDrop}
+          >
+            <FlowCanvas
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={handleNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onReconnect={onReconnect}
+              isValidConnection={isValidConnection}
+              selectedEdgeId={selectedEdgeId}
+              onNodeSelect={useCallback((id: string) => {
+                setSelectedNodeId(id)
+                setSelectedEdgeId(null)
+              }, [])}
+              onEdgeSelect={useCallback((id: string) => setSelectedEdgeId(id), [])}
+              onPaneSelect={useCallback(() => setSelectedEdgeId(null), [])}
+              onChange={handleCanvasChange}
+            />
+          </div>
+          <div className={styles.canvasFooter}>
+            <span>拖动节点整理流程布局</span>
+            <span>
+              <i /> 拒绝路径 <i className={styles.passKey} /> 通过路径
+            </span>
+          </div>
+        </main>
+
+        <aside className={styles.properties} aria-label="属性面板">
+          {selectedEdge ? (
+            <>
+              <div className={styles.propertyHeader}>
+                <div>
+                  <h2>连线属性</h2>
+                  <p>配置审批、会签、服务或条件路径的通过与驳回含义</p>
+                </div>
+                <Tag className={styles.kindTag}>流转路径</Tag>
+              </div>
+              <div className={styles.selectedSummary}>
+                <span className={styles.edgeSummaryIcon}>
+                  <BranchesOutlined />
+                </span>
+                <span>
+                  <strong>
+                    {edgeSource?.data.name ?? selectedEdge.source} →{' '}
+                    {edgeTarget?.data.name ?? selectedEdge.target}
+                  </strong>
+                  <small>
+                    连线业务标识 <code>{selectedEdge.id}</code>
+                  </small>
+                </span>
+                <Button
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  aria-label="删除当前连线"
+                  title="删除连线"
+                  onClick={() => {
+                    setEdges((current) => current.filter((edge) => edge.id !== selectedEdge.id))
+                    setSelectedEdgeId(null)
+                    setChecked(false)
+                  }}
+                />
+              </div>
+              <Form layout="vertical" requiredMark={false} className={styles.propertyForm}>
+                <section className={styles.formSection}>
+                  <div className={styles.sectionHeading}>
+                    <span>路径配置</span>
+                    <i />
+                  </div>
+                  {edgeSource && supportsResultBranch(edgeSource.data.kind) ? (
+                    <Form.Item label="路径结果" className={styles.formItem}>
+                      <Select
+                        value={selectedEdge.data?.branch}
+                        placeholder="普通流转，不设置结果"
+                        allowClear
+                        options={[
+                          { label: '通过', value: 'pass' },
+                          { label: '驳回', value: 'reject' },
+                        ]}
+                        onChange={(value: 'pass' | 'reject' | undefined) => updateEdgeBranch(value)}
+                      />
+                    </Form.Item>
+                  ) : (
+                    <div className={styles.fieldFootnote}>此起点不支持通过或驳回结果标记。</div>
+                  )}
+                  <Form.Item label="条件表达式（可选）" className={styles.formItem}>
+                    <Input
+                      allowClear
+                      value={selectedEdge.data?.conditionExpression ?? ''}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        setEdges((current) =>
+                          current.map((edge) =>
+                            edge.id === selectedEdge.id
+                              ? {
+                                  ...edge,
+                                  data: { ...edge.data, conditionExpression: value || undefined },
+                                }
+                              : edge,
+                          ),
+                        )
+                        setChecked(false)
+                      }}
+                      placeholder={'例如 ' + '$' + '{approved}；优先于路径结果'}
+                    />
+                  </Form.Item>
+                  <div className={styles.edgeRoute}>
+                    <span>起点</span>
+                    <strong>{edgeSource?.data.name ?? selectedEdge.source}</strong>
+                    <span>目标</span>
+                    <strong>{edgeTarget?.data.name ?? selectedEdge.target}</strong>
+                  </div>
+                  <div className={styles.fieldFootnote}>
+                    拒绝路径的回流目标由这条连线的终点决定。
+                  </div>
+                </section>
+              </Form>
+              <div className={styles.propertiesBottom}>
+                <span>业务模型</span>
+                <code>flows</code>
+                <span className={styles.bottomDivider} />
+                <span>分支</span>
+                <code>{selectedEdge.data?.branch ?? '普通流转'}</code>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={styles.propertyHeader}>
+                <div>
+                  <h2>属性设置</h2>
+                  <p>选中节点后编辑业务信息</p>
+                </div>
+                <Tag className={styles.kindTag}>
+                  <span
+                    className={
+                      styles.kindDot + ' ' + styles['dot' + kindMeta[selectedNode.data.kind].tone]
+                    }
+                  />
+                  {kindMeta[selectedNode.data.kind].label}
+                </Tag>
+              </div>
+              <div className={styles.selectedSummary}>
+                <span
+                  className={
+                    styles.summaryIcon +
+                    ' ' +
+                    styles['glyph' + kindMeta[selectedNode.data.kind].tone]
+                  }
+                >
+                  {(() => {
+                    const Icon = kindMeta[selectedNode.data.kind].icon
+                    return <Icon aria-hidden="true" />
+                  })()}
+                </span>
+                <span>
+                  <strong>{selectedNode.data.name}</strong>
+                  <small>
+                    节点标识 <code>{selectedNode.id}</code>
+                  </small>
+                </span>
+                {selectedNode.data.kind !== 'start' && selectedNode.data.kind !== 'end' && (
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    aria-label="删除当前节点"
+                    title="删除节点"
+                    onClick={() => {
+                      setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+                      setEdges((current) =>
+                        current.filter(
+                          (edge) =>
+                            edge.source !== selectedNode.id && edge.target !== selectedNode.id,
+                        ),
+                      )
+                      setSelectedEdgeId(null)
+                      setSelectedNodeId('start')
+                    }}
+                  />
+                )}
+              </div>
+              <Form layout="vertical" requiredMark={false} className={styles.propertyForm}>
+                <section className={styles.formSection}>
+                  <div className={styles.sectionHeading}>
+                    <span>基本信息</span>
+                    <i />
+                  </div>
+                  <Form.Item label="步骤名称" className={styles.formItem}>
+                    <Input
+                      value={selectedNode.data.name}
+                      onChange={(event) => updateNodeData({ name: event.target.value })}
+                      placeholder="输入步骤名称"
+                      maxLength={40}
+                    />
+                  </Form.Item>
+                  <div className={styles.fieldFootnote}>画布和业务模型 JSON 中均使用此名称。</div>
+                  <Form.Item label="表单标识（form）" className={styles.formItem}>
+                    <Input
+                      allowClear
+                      value={selectedNode.data.form ?? ''}
+                      onChange={(event) =>
+                        updateNodeData({ form: event.target.value || undefined })
+                      }
+                      placeholder="可选；留空时不生成"
+                    />
+                  </Form.Item>
+                </section>
+
+                {(selectedNode.data.kind === 'approval' ||
+                  selectedNode.data.kind === 'countersign') && (
+                  <section className={styles.formSection}>
+                    <div className={styles.sectionHeading}>
+                      <span>{selectedNode.data.kind === 'approval' ? '审批参数' : '节点参数'}</span>
+                      <i />
+                    </div>
+                    {selectedNode.data.kind === 'approval' && (
+                      <>
+                        <Form.Item label="办理人表达式" className={styles.formItem}>
+                          <Input
+                            value={selectedNode.data.assignee ?? ''}
+                            onChange={(event) =>
+                              updateNodeData({ assignee: event.target.value || undefined })
+                            }
+                            placeholder={'留空时使用 ' + '$' + '{' + selectedNode.id + '_assignee}'}
+                          />
+                        </Form.Item>
+                        <div className={styles.fieldFootnote}>可填固定办理人或流程变量表达式。</div>
+                      </>
+                    )}
+                    {selectedNode.data.kind === 'countersign' && (
+                      <Form.Item label="审批顺序" className={styles.formItem}>
+                        <Select
+                          value={selectedNode.data.sequential ? 'sequential' : 'parallel'}
+                          options={[
+                            { label: '并行处理', value: 'parallel' },
+                            { label: '按顺序处理', value: 'sequential' },
+                          ]}
+                          onChange={(value: 'parallel' | 'sequential') =>
+                            updateNodeData({ sequential: value === 'sequential' })
+                          }
+                        />
+                      </Form.Item>
+                    )}
+                    <Form.Item label="超时提醒" className={styles.formItem}>
+                      <Select
+                        value={selectedNode.data.reminderEnabled ? 'enabled' : 'disabled'}
+                        options={[
+                          { label: '关闭提醒', value: 'disabled' },
+                          { label: '启用提醒', value: 'enabled' },
+                        ]}
+                        onChange={(value: 'enabled' | 'disabled') =>
+                          updateNodeData({ reminderEnabled: value === 'enabled' })
+                        }
+                      />
+                    </Form.Item>
+                    {selectedNode.data.reminderEnabled && (
+                      <>
+                        <Form.Item label="提醒时长" className={styles.formItem}>
+                          <Input
+                            allowClear
+                            value={selectedNode.data.reminderDuration ?? ''}
+                            onChange={(event) =>
+                              updateNodeData({ reminderDuration: event.target.value || undefined })
+                            }
+                            placeholder="ISO-8601，例如 PT30M；留空时按节点 ID 发起可提供，默认 P1D"
+                          />
+                        </Form.Item>
+                        <Form.Item label="提醒名称" className={styles.formItem}>
+                          <Input
+                            allowClear
+                            value={selectedNode.data.reminderName ?? ''}
+                            onChange={(event) =>
+                              updateNodeData({ reminderName: event.target.value || undefined })
+                            }
+                            placeholder={'默认：' + selectedNode.data.name + '超时提醒'}
+                          />
+                        </Form.Item>
+                      </>
+                    )}
+                  </section>
+                )}
+
+                {selectedNode.data.kind === 'countersign' && (
+                  <section className={styles.formSection}>
+                    <div className={styles.sectionHeading}>
+                      <span>多人审批</span>
+                      <i />
+                    </div>
+                    <Form.Item label="审批模式" className={styles.formItem}>
+                      <Select
+                        value={selectedNode.data.approveMode}
+                        allowClear
+                        placeholder="留空不固化，发起时可按节点 ID 提供"
+                        options={[
+                          { label: '会签 · 所有人通过（ALL）', value: 'ALL' },
+                          { label: '或签 · 任意一人通过（ANY）', value: 'ANY' },
+                          { label: '比例会签（VOTE）', value: 'VOTE' },
+                        ]}
+                        onChange={(value: string | undefined) =>
+                          updateNodeData({ approveMode: value || undefined })
+                        }
+                      />
+                    </Form.Item>
+                    <Form.Item label="通过比例（passRate）" className={styles.formItem}>
+                      <Input
+                        inputMode="decimal"
+                        value={selectedNode.data.passRate ?? ''}
+                        onChange={(event) =>
+                          updateNodeData({ passRate: event.target.value || undefined })
+                        }
+                        placeholder="范围 (0, 1]；未填写时可按节点 ID 在发起时提供"
+                      />
+                    </Form.Item>
+                    <div className={styles.fieldFootnote}>
+                      模式填写在此会签节点的 approveMode 字段；只有留空时才按后端定义使用启动变量{' '}
+                      {selectedNode.id}_approveMode。该值名由节点 ID 派生。比例仅在 VOTE
+                      模式需要配置。
+                    </div>
+                    <Alert
+                      className={styles.serviceAlert}
+                      type="info"
+                      showIcon
+                      message="会签模式属于节点配置"
+                      description="approveMode 作为 nodes[] 中会签节点的属性提交。当前后端支持 ALL、ANY、VOTE；留空时可按节点 ID 在发起时提供，默认 ALL。"
+                    />
+                  </section>
+                )}
+
+                {selectedNode.data.kind === 'service' && (
+                  <section className={styles.formSection}>
+                    <div className={styles.sectionHeading}>
+                      <span>服务配置</span>
+                      <i />
+                    </div>
+                    <Form.Item label="服务名称" className={styles.formItem}>
+                      <Input
+                        allowClear
+                        value={serviceData?.serviceName ?? ''}
+                        onChange={(event) => updateNodeData({ serviceName: event.target.value })}
+                        placeholder="留空表示在发起时动态提供"
+                        maxLength={60}
+                      />
+                    </Form.Item>
+                    <div className={styles.fieldFootnote}>
+                      留空时使用启动变量 {selectedNode.id}_serviceName；固定值写入流程定义。
+                    </div>
+                    <Form.Item label="服务地址" className={styles.formItem}>
+                      <Input
+                        allowClear
+                        prefix={<LinkOutlined />}
+                        value={serviceData?.serviceUrl ?? ''}
+                        onChange={(event) => updateNodeData({ serviceUrl: event.target.value })}
+                        placeholder="留空表示在发起时动态提供"
+                      />
+                    </Form.Item>
+                    {dynamicService ? (
+                      <Alert
+                        className={styles.serviceAlert}
+                        type="warning"
+                        showIcon
+                        icon={<InfoCircleOutlined />}
+                        message="动态服务地址"
+                        description={
+                          '留空时由发起方通过启动变量 ' + selectedNode.id + '_serviceUrl 提供。'
+                        }
+                      />
+                    ) : (
+                      <div className={styles.addressMode}>
+                        <span className={styles.modeDot} />
+                        <span>
+                          <strong>固定服务地址</strong>
+                          <small>随流程业务模型提交并参与编译</small>
+                        </span>
+                      </div>
+                    )}
+                    <div className={styles.serviceFootnote}>
+                      <InfoCircleOutlined /> 服务节点由后端流程引擎执行。
+                    </div>
+                  </section>
+                )}
+
+                {selectedNode.data.kind !== 'service' && selectedNode.data.kind !== 'condition' && (
+                  <section className={styles.formSection}>
+                    <div className={styles.sectionHeading}>
+                      <span>节点说明</span>
+                      <i />
+                    </div>
+                    <p className={styles.nodeDescription}>
+                      {selectedNode.data.kind === 'start'
+                        ? '流程从此处开始。每个流程只保留一个开始节点。'
+                        : selectedNode.data.kind === 'end'
+                          ? '流程到达此处后完成。每个流程只保留一个结束节点。'
+                          : selectedNode.data.kind === 'countersign'
+                            ? '流程到达此处后，多个审批人按照设定的会签或或签规则共同处理。'
+                            : '流程到达此步骤后，由业务指定的审批人进行处理。'}
+                    </p>
+                  </section>
+                )}
+              </Form>
+              <div className={styles.propertiesBottom}>
+                <span>业务模型</span>
+                <code>service</code>
+                <span className={styles.bottomDivider} />
+                <span>画布坐标</span>
+                <code>
+                  {Math.round(selectedNode.position.x)}, {Math.round(selectedNode.position.y)}
+                </code>
+              </div>
+            </>
+          )}
+        </aside>
       </div>
 
       <Modal
@@ -640,12 +1096,8 @@ export function DesignerUiPrototype() {
           <Button key="close" onClick={() => setJsonOpen(false)}>
             关闭
           </Button>,
-          <Button
-            key="copy"
-            icon={copied ? <CheckOutlined /> : <CopyOutlined />}
-            onClick={copyJson}
-          >
-            {copied ? '已复制' : '复制 JSON'}
+          <Button key="copy" icon={<CopyOutlined />} onClick={copyJson}>
+            {jsonCopied ? '已复制' : '复制 JSON'}
           </Button>,
           <Button key="download" type="primary" icon={<DownloadOutlined />} onClick={downloadJson}>
             下载 JSON
@@ -653,16 +1105,147 @@ export function DesignerUiPrototype() {
         ]}
         width={680}
       >
-        <div className={styles.jsonNote}>
-          此 JSON 仅用于设计稿体验，服务地址为空时将采用动态模式。
-        </div>
+        <p className={styles.jsonNote}>
+          服务地址留空表示动态地址；这里展示并下载当前业务模型 JSON。
+        </p>
         <Input.TextArea
+          className={styles.jsonBox}
           value={json}
           readOnly
-          autoSize={{ minRows: 18, maxRows: 27 }}
-          className={styles.jsonBox}
+          autoSize={{ minRows: 18, maxRows: 28 }}
         />
       </Modal>
+      <Modal
+        title="流程检查"
+        open={checkOpen}
+        onCancel={() => setCheckOpen(false)}
+        footer={<Button onClick={() => setCheckOpen(false)}>完成</Button>}
+      >
+        {issues.length ? (
+          <div className={styles.issueList}>
+            {issues.map((issue, index) => (
+              <button
+                key={(issue.nodeId || issue.edgeId || 'flow') + '-check-' + index}
+                type="button"
+                className={styles.issueItem}
+                onClick={() => {
+                  locateIssue(issue)
+                  setCheckOpen(false)
+                }}
+              >
+                <span>{issue.message}</span>
+                <small>{issue.locationLabel || '流程'}</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <Alert
+            type="success"
+            showIcon
+            message="流程检查通过"
+            description="节点和路径均符合当前业务模型规则。"
+          />
+        )}
+      </Modal>
     </section>
+  )
+}
+
+function FlowCanvas(props: {
+  nodes: CanvasNode[]
+  edges: CanvasEdge[]
+  onNodesChange: (changes: NodeChange<CanvasNode>[]) => void
+  onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void
+  onConnect: (connection: Connection) => void
+  onReconnect: (oldEdge: CanvasEdge, connection: Connection) => void
+  isValidConnection: (connection: { source: string; target: string }) => boolean
+  onNodeSelect: (id: string) => void
+  selectedEdgeId: string | null
+  onEdgeSelect: (id: string) => void
+  onPaneSelect: () => void
+  onChange: () => void
+}) {
+  const displayEdges = useMemo(
+    () =>
+      props.edges.map((edge) => ({
+        ...edge,
+        selected: edge.id === props.selectedEdgeId,
+      })),
+    [props.edges, props.selectedEdgeId],
+  )
+  const applyNodeChanges = props.onNodesChange
+  const applyEdgeChanges = props.onEdgesChange
+  const connectNodes = props.onConnect
+  const markChanged = props.onChange
+  const selectNode = props.onNodeSelect
+  const selectEdge = props.onEdgeSelect
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      applyNodeChanges(changes)
+      if (changes.some((change) => change.type === 'position' && change.dragging === false))
+        markChanged()
+    },
+    [applyNodeChanges, markChanged],
+  )
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange<CanvasEdge>[]) => {
+      applyEdgeChanges(changes)
+      markChanged()
+    },
+    [applyEdgeChanges, markChanged],
+  )
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      connectNodes(connection)
+      markChanged()
+    },
+    [connectNodes, markChanged],
+  )
+  const handleNodeClick = useCallback(
+    (_: React.MouseEvent, node: CanvasNode) => {
+      selectNode(node.id)
+    },
+    [selectNode],
+  )
+  const handleEdgeClick = useCallback(
+    (_: React.MouseEvent, edge: CanvasEdge) => {
+      selectEdge(edge.id)
+    },
+    [selectEdge],
+  )
+
+  return (
+    <ReactFlow
+      nodes={props.nodes}
+      edges={displayEdges}
+      nodeTypes={nodeTypes}
+      onNodesChange={handleNodesChange}
+      onEdgesChange={handleEdgesChange}
+      onConnect={handleConnect}
+      onNodeClick={handleNodeClick}
+      onEdgeClick={handleEdgeClick}
+      onPaneClick={props.onPaneSelect}
+      onReconnect={props.onReconnect}
+      isValidConnection={props.isValidConnection}
+      reconnectRadius={28}
+      fitView
+      fitViewOptions={fitViewOptions}
+      minZoom={0.35}
+      maxZoom={1.6}
+      defaultEdgeOptions={defaultEdgeOptions}
+      deleteKeyCode={['Backspace', 'Delete']}
+    >
+      <Background variant={BackgroundVariant.Dots} gap={20} size={1.1} color="#dce6df" />
+      <MiniMap className={styles.miniMap} pannable zoomable nodeColor={getMiniMapNodeColor} />
+      <Controls className={styles.flowControls} showInteractive={false} />
+    </ReactFlow>
+  )
+}
+
+export function DesignerUiPrototype() {
+  return (
+    <ReactFlowProvider>
+      <DesignerUiPrototypeContent />
+    </ReactFlowProvider>
   )
 }
