@@ -7,13 +7,23 @@ export interface TaskTemplateVariable {
   description?: string
   source?: 'start' | 'complete' | 'engine'
   required?: boolean
+  /** Optional backend-declared options for dynamic string fields such as approveMode. */
+  allowed?: string[]
+  /** Backend metadata for contextual validation such as a proportion's upper bound. */
+  maximum?: number
+  minimum?: number
+  exclusiveMinimum?: boolean
 }
 
 export interface TaskTemplate {
   id: number
   tenantId: string
-  taskKey: string
-  taskName: string
+  templateKey: string
+  templateName: string
+  /** @deprecated Previous gateway field name; retained for source compatibility only. */
+  taskKey?: string
+  /** @deprecated Previous gateway field name; retained for source compatibility only. */
+  taskName?: string
   version: number
   deploymentId: string
   processDefinitionKey: string
@@ -44,8 +54,13 @@ export interface PublishTemplateInput {
    * Unique key for this template. Existing backend contract overwrites a
    * template when the same key is deployed again.
    */
+  templateKey?: string
+  templateName?: string
+  /** @deprecated Use templateKey. It is serialized as the new template-key form field. */
   taskKey?: string
+  /** @deprecated Use templateName. It is serialized as the new template-name form field. */
   taskName?: string
+  /** @deprecated The current API assigns template versions; this input is not serialized. */
   version?: number
   category?: string
   versionTag?: string
@@ -71,7 +86,9 @@ export interface TaskTemplateQuery {
 }
 
 export interface StartBusinessTaskInput {
-  taskKey: string
+  templateKey?: string
+  /** @deprecated Use templateKey. The gateway normalizes this to the new wire field. */
+  taskKey?: string
   businessKey: string
   variables?: BusinessVariables
   callbackUrl?: string
@@ -81,10 +98,11 @@ export interface StartBusinessTaskInput {
 }
 
 export interface BusinessTaskInstance extends StartBusinessTaskInput {
+  templateKey: string
   id: number
   tenantId: string
-  taskName: string
-  taskTemplateId: number
+  templateName: string
+  templateId: number
   processDefinitionKey: string
   processDefinitionId: string
   processInstanceId: string
@@ -93,6 +111,13 @@ export interface BusinessTaskInstance extends StartBusinessTaskInput {
   startedAt?: string
   createdAt?: string
   updatedAt?: string
+}
+
+export type TaskInstanceRecord = Omit<
+  BusinessTaskInstance,
+  'templateKey' | 'businessKey' | 'variables'
+> & {
+  businessKey: string
 }
 
 export interface BatchStartItem extends StartBusinessTaskInput {
@@ -118,8 +143,8 @@ export interface TaskTreeNode {
   businessKey: string
   parentBusinessKey?: string
   processInstanceId: string
-  taskKey: string
-  taskName: string
+  templateKey: string
+  templateName: string
   status: string
   startedAt?: string
   children?: TaskTreeNode[]
@@ -182,7 +207,7 @@ export interface BusinessTaskQuery {
 }
 
 export interface TaskTemplateDeleteResult {
-  taskKey: string
+  templateKey: string
   status: 'deleted'
 }
 export interface TaskCompletionResult {

@@ -32,9 +32,8 @@ export const businessWorkflowGateway = {
     form.append('deployment-name', name)
     form.append('file', new Blob([xml], { type: 'application/xml' }), filename)
     const fields = {
-      taskKey: 'task-key',
-      taskName: 'task-name',
-      version: 'version',
+      templateKey: 'template-key',
+      templateName: 'template-name',
       category: 'category',
       versionTag: 'version-tag',
       description: 'description',
@@ -47,35 +46,41 @@ export const businessWorkflowGateway = {
       createdBy: 'created-by',
     } as const
     for (const key of Object.keys(fields) as Array<keyof typeof fields>) {
-      const value = metadata[key]
+      const value =
+        metadata[key] ??
+        (key === 'templateKey'
+          ? input.taskKey
+          : key === 'templateName'
+            ? input.taskName
+            : undefined)
       if (value !== undefined) {
         form.append(fields[key], typeof value === 'object' ? JSON.stringify(value) : String(value))
       }
     }
-    return requestData({ method: 'POST', url: basePath + '/task/deployments', data: form, signal })
+    return requestData({ method: 'POST', url: basePath + '/template', data: form, signal })
   },
 
   listTemplates(query?: TaskTemplateQuery, signal?: AbortSignal): Promise<TaskTemplate[]> {
     return requestData({
       method: 'GET',
-      url: basePath + '/task/deployments',
+      url: basePath + '/template',
       params: query,
       signal,
     })
   },
 
-  getTemplate(taskKey: string, signal?: AbortSignal): Promise<TaskTemplateDetail> {
+  getTemplate(templateKey: string, signal?: AbortSignal): Promise<TaskTemplateDetail> {
     return requestData({
       method: 'GET',
-      url: basePath + '/task/deployments/' + segment(taskKey),
+      url: basePath + '/template/' + segment(templateKey),
       signal,
     })
   },
 
-  deleteTemplate(taskKey: string, signal?: AbortSignal): Promise<TaskTemplateDeleteResult> {
+  deleteTemplate(templateKey: string, signal?: AbortSignal): Promise<TaskTemplateDeleteResult> {
     return requestData({
       method: 'DELETE',
-      url: basePath + '/task/deployments/' + segment(taskKey),
+      url: basePath + '/template/' + segment(templateKey),
       signal,
     })
   },
@@ -84,10 +89,13 @@ export const businessWorkflowGateway = {
     input: StartBusinessTaskInput,
     signal?: AbortSignal,
   ): Promise<BusinessTaskInstance> {
+    const templateKey = input.templateKey || input.taskKey
+    if (!templateKey) throw new Error('启动流程必须提供 templateKey。')
+    const { taskKey: _taskKey, ...body } = input
     return requestData({
       method: 'POST',
       url: basePath + '/task/instances/start',
-      data: input,
+      data: { ...body, templateKey },
       signal,
     })
   },
@@ -96,10 +104,20 @@ export const businessWorkflowGateway = {
     items: BatchStartItem[],
     signal?: AbortSignal,
   ): Promise<BatchStartResult> {
+    const normalizeItem = (item: BatchStartItem): BatchStartItem => {
+      const templateKey = item.templateKey || item.taskKey
+      if (!templateKey) throw new Error('批量启动流程必须提供 templateKey。')
+      const { taskKey: _taskKey, children, ...body } = item
+      return {
+        ...body,
+        templateKey,
+        ...(children ? { children: children.map(normalizeItem) } : {}),
+      }
+    }
     return requestData({
       method: 'POST',
       url: basePath + '/task/instances/batch-start',
-      data: { items },
+      data: { items: items.map(normalizeItem) },
       signal,
     })
   },

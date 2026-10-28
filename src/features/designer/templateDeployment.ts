@@ -4,9 +4,11 @@ import { ApiError } from '@/utils/request'
 
 export function assertDeploymentResult(template: TaskTemplate): void {
   if (
-    [template?.taskKey, template?.deploymentId, template?.processDefinitionId].some(
-      (value) => typeof value !== 'string' || !value.trim(),
-    ) ||
+    [
+      template?.templateKey || template?.taskKey,
+      template?.deploymentId,
+      template?.processDefinitionId,
+    ].some((value) => typeof value !== 'string' || !value.trim()) ||
     !Number.isInteger(template?.version) ||
     template.version < 1
   ) {
