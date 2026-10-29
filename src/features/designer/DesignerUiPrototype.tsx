@@ -1,11 +1,13 @@
 /** Single-canvas workflow designer using the accepted A-layout prototype. */
-import { memo, useCallback, useMemo, useState, type DragEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   addEdge,
+  BaseEdge,
   Background,
   BackgroundVariant,
   Controls,
   Handle,
+  getSmoothStepPath,
   MarkerType,
   MiniMap,
   NodeToolbar,
@@ -14,15 +16,18 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
+  useNodesInitialized,
   useNodesState,
   useReactFlow,
   type Connection,
   type EdgeChange,
+  type EdgeProps,
   type NodeChange,
   type NodeProps,
 } from '@xyflow/react'
 import {
   ApiOutlined,
+  ApartmentOutlined,
   AuditOutlined,
   BranchesOutlined,
   CheckCircleOutlined,
@@ -38,6 +43,14 @@ import {
   TeamOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Form, Input, message, Modal, Select, Tag } from 'antd'
+import { compileWorkflowModel } from '@/api/bpmn'
+import type { WorkflowModel } from '@/api/workflowModel'
+import {
+  clearWorkflowEdgeRoutes,
+  getRejectRoutePoints,
+  isFeedbackRejectEdge,
+  layoutWorkflow,
+} from './workflowLayout'
 import styles from './DesignerUiPrototype.module.less'
 import '@xyflow/react/dist/style.css'
 import {
@@ -120,35 +133,35 @@ const initialEdges: CanvasEdge[] = [
     id: 'start-apply',
     source: 'start',
     target: 'apply',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     markerEnd: { type: MarkerType.ArrowClosed },
   },
   {
     id: 'apply-service',
     source: 'apply',
     target: 'managers',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     markerEnd: { type: MarkerType.ArrowClosed },
   },
   {
     id: 'managers-service',
     source: 'managers',
     target: 'check_stock',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     markerEnd: { type: MarkerType.ArrowClosed },
   },
   {
     id: 'service-result',
     source: 'check_stock',
     target: 'gwMinister',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     markerEnd: { type: MarkerType.ArrowClosed },
   },
   {
     id: 'result-end',
     source: 'gwMinister',
     target: 'end',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     label: '通过',
     data: { branch: 'pass' },
     markerEnd: { type: MarkerType.ArrowClosed },
@@ -157,7 +170,7 @@ const initialEdges: CanvasEdge[] = [
     id: 'result-apply',
     source: 'gwMinister',
     target: 'apply',
-    type: 'smoothstep',
+    type: 'workflowRoute',
     label: '驳回',
     className: 'branch-reject',
     data: { branch: 'reject' },
@@ -178,8 +191,34 @@ const kindMeta: Record<NodeKind, { label: string; tone: string; icon: typeof Pla
 const nodeTypes = { workflowNode: memo(WorkflowNodeView) }
 const fitViewOptions = { padding: 0.04, maxZoom: 1.15 }
 const defaultEdgeOptions = {
-  type: 'smoothstep' as const,
+  type: 'workflowRoute',
   markerEnd: { type: MarkerType.ArrowClosed },
+}
+const edgeTypes = { workflowRoute: memo(WorkflowRouteEdge) }
+
+function isWorkflowModel(value: unknown): value is WorkflowModel {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const model = value as Partial<WorkflowModel>
+  const nodeTypes = ['start', 'approval', 'countersign', 'service', 'condition', 'end']
+
+  return (
+    typeof model.processId === 'string' &&
+    typeof model.processName === 'string' &&
+    Array.isArray(model.nodes) &&
+    model.nodes.every(
+      (node) =>
+        Boolean(node) &&
+        typeof node.id === 'string' &&
+        nodeTypes.includes(node.type) &&
+        typeof node.name === 'string' &&
+        typeof node.x === 'number' &&
+        typeof node.y === 'number',
+    ) &&
+    Array.isArray(model.flows) &&
+    model.flows.every(
+      (flow) => Boolean(flow) && typeof flow.source === 'string' && typeof flow.target === 'string',
+    )
+  )
 }
 
 function getMiniMapNodeColor(node: CanvasNode): string {
@@ -188,6 +227,62 @@ function getMiniMapNodeColor(node: CanvasNode): string {
     : node.data.kind === 'condition'
       ? '#8e7ab5'
       : '#7ca58e'
+}
+
+function WorkflowRouteEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+  label,
+  markerEnd,
+  style,
+}: EdgeProps<CanvasEdge>) {
+  const points = data?.routePoints
+  const className = data?.branch ? 'branch-' + data.branch : undefined
+  if (points && points.length > 1) {
+    const path = points
+      .map((point, index) => (index === 0 ? 'M' : 'L') + ' ' + point.x + ' ' + point.y)
+      .join(' ')
+    const middlePoint = points[Math.floor(points.length / 2)]
+    return (
+      <BaseEdge
+        id={id}
+        path={path}
+        label={label}
+        labelX={middlePoint.x}
+        labelY={middlePoint.y - 8}
+        markerEnd={markerEnd}
+        style={style}
+        className={className}
+      />
+    )
+  }
+
+  const [path, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  })
+  return (
+    <BaseEdge
+      id={id}
+      path={path}
+      label={label}
+      labelX={labelX}
+      labelY={labelY}
+      markerEnd={markerEnd}
+      style={style}
+      className={className}
+    />
+  )
 }
 
 function WorkflowNodeView({ data, selected, isConnectable }: NodeProps<CanvasNode>) {
@@ -247,10 +342,19 @@ function DesignerUiPrototypeContent() {
   const [processId, setProcessId] = useState('service-approval')
   const [processName, setProcessName] = useState('服务调用')
   const [jsonOpen, setJsonOpen] = useState(false)
+  const [workflowJsonOpen, setWorkflowJsonOpen] = useState(false)
+  const [workflowJsonInput, setWorkflowJsonInput] = useState('')
+  const [xmlOpen, setXmlOpen] = useState(false)
+  const [workflowXml, setWorkflowXml] = useState('')
+  const [xmlCompiling, setXmlCompiling] = useState(false)
+  const [xmlCopied, setXmlCopied] = useState(false)
   const [checkOpen, setCheckOpen] = useState(false)
   const [jsonCopied, setJsonCopied] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [layoutRunning, setLayoutRunning] = useState(false)
   const { screenToFlowPosition, getNodes, fitView } = useReactFlow<CanvasNode, CanvasEdge>()
+  const nodesInitialized = useNodesInitialized()
+  const initialLayoutStarted = useRef(false)
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0]
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId)
@@ -260,7 +364,7 @@ function DesignerUiPrototypeContent() {
   const edgeTarget = selectedEdge
     ? nodes.find((node) => node.id === selectedEdge.target)
     : undefined
-  const serviceData = selectedNode.data.kind === 'service' ? selectedNode.data : undefined
+  const serviceData = selectedNode?.data.kind === 'service' ? selectedNode.data : undefined
   const dynamicService = Boolean(serviceData && !serviceData.serviceUrl?.trim())
 
   const updateNodeData = useCallback(
@@ -282,6 +386,29 @@ function DesignerUiPrototypeContent() {
   const json = JSON.stringify(model, null, 2)
   const issues = useMemo(() => validateWorkflowModel(model), [model])
 
+  const runAutoLayout = useCallback(async () => {
+    if (!nodes.length) return
+    setLayoutRunning(true)
+    try {
+      const layouted = await layoutWorkflow(nodes, clearWorkflowEdgeRoutes(edges))
+      setNodes([...layouted.nodes])
+      setEdges([...layouted.edges])
+      setChecked(false)
+      window.requestAnimationFrame(() => fitView({ padding: 0.12, duration: 350, maxZoom: 1.05 }))
+    } catch {
+      message.error('自动排布失败，请稍后重试。')
+    } finally {
+      setLayoutRunning(false)
+    }
+  }, [edges, fitView, nodes, setEdges, setNodes])
+
+  useEffect(() => {
+    if (nodesInitialized && !initialLayoutStarted.current) {
+      initialLayoutStarted.current = true
+      void runAutoLayout()
+    }
+  }, [nodesInitialized, runAutoLayout])
+
   const addNode = useCallback(
     (kind: NodeKind, position?: { x: number; y: number }) => {
       if (
@@ -292,11 +419,17 @@ function DesignerUiPrototypeContent() {
         return
       }
       setSelectedEdgeId(null)
+      const currentNodes = getNodes()
+      const rightmost = currentNodes.reduce(
+        (right, current) => Math.max(right, current.position.x + 154),
+        100,
+      )
+      const selected = currentNodes.find((current) => current.id === selectedNodeId)
       const id = kind + '_' + Math.random().toString(36).slice(2, 7)
       const node: CanvasNode = {
         id,
         type: 'workflowNode',
-        position: position ?? { x: 360 + Math.random() * 120, y: 90 + Math.random() * 180 },
+        position: position ?? { x: rightmost + 110, y: selected?.position.y ?? 180 },
         data: {
           kind,
           name: kind === 'service' ? '新建服务' : kindMeta[kind].label,
@@ -307,7 +440,7 @@ function DesignerUiPrototypeContent() {
       setSelectedNodeId(id)
       setChecked(false)
     },
-    [getNodes, setNodes],
+    [getNodes, selectedNodeId, setNodes],
   )
 
   const onConnect = useCallback(
@@ -342,7 +475,7 @@ function DesignerUiPrototypeContent() {
         return addEdge(
           {
             ...connection,
-            type: 'smoothstep',
+            type: 'workflowRoute',
             ...(branch
               ? {
                   label,
@@ -467,6 +600,56 @@ function DesignerUiPrototypeContent() {
     window.setTimeout(() => setJsonCopied(false), 1500)
   }
 
+  const convertModelToXml = async (workflowModel: WorkflowModel) => {
+    setXmlCompiling(true)
+    try {
+      const result = await compileWorkflowModel(workflowModel)
+      setWorkflowXml(result)
+      setXmlCopied(false)
+      setXmlOpen(true)
+      return true
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'BPMN XML 转换失败，请重试。')
+      return false
+    } finally {
+      setXmlCompiling(false)
+    }
+  }
+
+  const compileXml = () => convertModelToXml(model)
+
+  const compileJsonXml = async () => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(workflowJsonInput)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'JSON 语法错误'
+      message.error('业务 JSON 无法解析：' + detail)
+      return
+    }
+
+    if (!isWorkflowModel(parsed)) {
+      message.error(
+        '业务 JSON 格式不正确：请提供 processId、processName、nodes 和 flows；节点需包含 id、type、name、x、y，连线需包含 source、target。',
+      )
+      return
+    }
+
+    if (await convertModelToXml(parsed)) setWorkflowJsonOpen(false)
+  }
+
+  const copyXml = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(workflowXml)
+      setXmlCopied(true)
+      message.success('BPMN XML 已复制')
+      window.setTimeout(() => setXmlCopied(false), 1500)
+    } catch {
+      message.error('复制失败，请在 XML 文本框中手动选择并复制。')
+    }
+  }
+
   const downloadJson = () => {
     const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
     const anchor = document.createElement('a')
@@ -500,6 +683,11 @@ function DesignerUiPrototypeContent() {
         changes.flatMap((change) => (change.type === 'remove' ? [change.id] : [])),
       )
       if (removedNodeIds.size) {
+        setSelectedNodeId((current) =>
+          removedNodeIds.has(current)
+            ? (nodes.find((node) => !removedNodeIds.has(node.id))?.id ?? '')
+            : current,
+        )
         setEdges((current) =>
           current.filter(
             (edge) => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target),
@@ -508,8 +696,11 @@ function DesignerUiPrototypeContent() {
         setChecked(false)
       }
     },
-    [onNodesChange, setEdges],
+    [nodes, onNodesChange, setEdges],
   )
+  const clearEdgeRoutes = useCallback(() => {
+    setEdges((current) => clearWorkflowEdgeRoutes(current))
+  }, [setEdges])
 
   const isValidConnection = useCallback(
     (connection: { source: string; target: string }) => {
@@ -584,6 +775,12 @@ function DesignerUiPrototypeContent() {
           </span>
           <Button icon={<CodeOutlined />} onClick={() => setJsonOpen(true)}>
             查看业务 JSON
+          </Button>
+          <Button icon={<CodeOutlined />} onClick={() => setWorkflowJsonOpen(true)}>
+            粘贴 JSON 转 XML
+          </Button>
+          <Button icon={<CodeOutlined />} loading={xmlCompiling} onClick={compileXml}>
+            生成 BPMN XML
           </Button>
           <Button type="primary" icon={<CheckCircleOutlined />} onClick={checkFlow}>
             检查流程
@@ -667,9 +864,19 @@ function DesignerUiPrototypeContent() {
               <h2>流程画布</h2>
               <span>选择节点编辑属性，拖动可调整位置</span>
             </div>
-            <Button size="small" icon={<PlusOutlined />} onClick={() => addNode('service')}>
-              添加服务
-            </Button>
+            <div className={styles.canvasActions}>
+              <Button
+                size="small"
+                icon={<ApartmentOutlined />}
+                loading={layoutRunning}
+                onClick={() => void runAutoLayout()}
+              >
+                自动排布
+              </Button>
+              <Button size="small" icon={<PlusOutlined />} onClick={() => addNode('service')}>
+                添加服务
+              </Button>
+            </div>
           </div>
           <div
             className={styles.canvasWrap}
@@ -692,6 +899,7 @@ function DesignerUiPrototypeContent() {
               onEdgeSelect={useCallback((id: string) => setSelectedEdgeId(id), [])}
               onPaneSelect={useCallback(() => setSelectedEdgeId(null), [])}
               onChange={handleCanvasChange}
+              onNodeMove={clearEdgeRoutes}
             />
           </div>
           <div className={styles.canvasFooter}>
@@ -800,7 +1008,7 @@ function DesignerUiPrototypeContent() {
                 <code>{selectedEdge.data?.branch ?? '普通流转'}</code>
               </div>
             </>
-          ) : (
+          ) : selectedNode ? (
             <>
               <div className={styles.propertyHeader}>
                 <div>
@@ -890,20 +1098,6 @@ function DesignerUiPrototypeContent() {
                       <span>{selectedNode.data.kind === 'approval' ? '审批参数' : '节点参数'}</span>
                       <i />
                     </div>
-                    {selectedNode.data.kind === 'approval' && (
-                      <>
-                        <Form.Item label="办理人表达式" className={styles.formItem}>
-                          <Input
-                            value={selectedNode.data.assignee ?? ''}
-                            onChange={(event) =>
-                              updateNodeData({ assignee: event.target.value || undefined })
-                            }
-                            placeholder={'留空时使用 ' + '$' + '{' + selectedNode.id + '_assignee}'}
-                          />
-                        </Form.Item>
-                        <div className={styles.fieldFootnote}>可填固定办理人或流程变量表达式。</div>
-                      </>
-                    )}
                     {selectedNode.data.kind === 'countersign' && (
                       <Form.Item label="审批顺序" className={styles.formItem}>
                         <Select
@@ -974,20 +1168,25 @@ function DesignerUiPrototypeContent() {
                           { label: '比例会签（VOTE）', value: 'VOTE' },
                         ]}
                         onChange={(value: string | undefined) =>
-                          updateNodeData({ approveMode: value || undefined })
+                          updateNodeData({
+                            approveMode: value || undefined,
+                            ...(value === 'VOTE' ? {} : { passRate: undefined }),
+                          })
                         }
                       />
                     </Form.Item>
-                    <Form.Item label="通过比例（passRate）" className={styles.formItem}>
-                      <Input
-                        inputMode="decimal"
-                        value={selectedNode.data.passRate ?? ''}
-                        onChange={(event) =>
-                          updateNodeData({ passRate: event.target.value || undefined })
-                        }
-                        placeholder="范围 (0, 1]；未填写时可按节点 ID 在发起时提供"
-                      />
-                    </Form.Item>
+                    {selectedNode.data.approveMode === 'VOTE' && (
+                      <Form.Item label="通过比例（passRate）" className={styles.formItem}>
+                        <Input
+                          inputMode="decimal"
+                          value={selectedNode.data.passRate ?? ''}
+                          onChange={(event) =>
+                            updateNodeData({ passRate: event.target.value || undefined })
+                          }
+                          placeholder="范围 (0, 1]；未填写时可按节点 ID 在发起时提供"
+                        />
+                      </Form.Item>
+                    )}
                     <div className={styles.fieldFootnote}>
                       模式填写在此会签节点的 approveMode 字段；只有留空时才按后端定义使用启动变量{' '}
                       {selectedNode.id}_approveMode。该值名由节点 ID 派生。比例仅在 VOTE
@@ -1084,6 +1283,12 @@ function DesignerUiPrototypeContent() {
                 </code>
               </div>
             </>
+          ) : (
+            <div className={styles.emptyProperties}>
+              <div className={styles.emptyPropertiesIcon}>◇</div>
+              <strong>画布为空</strong>
+              <p>添加开始、审批或其他流程节点，继续设计业务流程。</p>
+            </div>
           )}
         </aside>
       </div>
@@ -1111,6 +1316,64 @@ function DesignerUiPrototypeContent() {
         <Input.TextArea
           className={styles.jsonBox}
           value={json}
+          readOnly
+          autoSize={{ minRows: 18, maxRows: 28 }}
+        />
+      </Modal>
+      <Modal
+        title="输入业务 JSON"
+        open={workflowJsonOpen}
+        onCancel={() => setWorkflowJsonOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setWorkflowJsonOpen(false)}>
+            取消
+          </Button>,
+          <Button
+            key="compile"
+            type="primary"
+            icon={<CodeOutlined />}
+            loading={xmlCompiling}
+            onClick={compileJsonXml}
+          >
+            转换为 BPMN XML
+          </Button>,
+        ]}
+        width={760}
+      >
+        <p className={styles.jsonNote}>
+          粘贴包含流程标识、名称、节点和连线的业务模型 JSON。转换后可在 XML 窗口中复制结果。
+        </p>
+        <Input.TextArea
+          className={styles.jsonBox}
+          value={workflowJsonInput}
+          onChange={(event) => setWorkflowJsonInput(event.target.value)}
+          placeholder={
+            '{\n  "processId": "my-workflow",\n  "processName": "示例流程",\n  "nodes": [],\n  "flows": []\n}'
+          }
+          aria-label="业务 JSON"
+          autoSize={{ minRows: 16, maxRows: 26 }}
+        />
+      </Modal>
+      <Modal
+        title="BPMN XML"
+        open={xmlOpen}
+        onCancel={() => setXmlOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setXmlOpen(false)}>
+            关闭
+          </Button>,
+          <Button key="copy" icon={<CopyOutlined />} onClick={copyXml}>
+            {xmlCopied ? '已复制' : '复制 XML'}
+          </Button>,
+        ]}
+        width={760}
+      >
+        <p className={styles.jsonNote}>
+          XML 由当前业务模型生成；可复制到剪贴板，或在下方文本框中手动选择。
+        </p>
+        <Input.TextArea
+          className={styles.jsonBox}
+          value={workflowXml}
           readOnly
           autoSize={{ minRows: 18, maxRows: 28 }}
         />
@@ -1164,28 +1427,52 @@ function FlowCanvas(props: {
   onEdgeSelect: (id: string) => void
   onPaneSelect: () => void
   onChange: () => void
+  onNodeMove: () => void
 }) {
   const displayEdges = useMemo(
     () =>
-      props.edges.map((edge) => ({
-        ...edge,
-        selected: edge.id === props.selectedEdgeId,
-      })),
-    [props.edges, props.selectedEdgeId],
+      props.edges.map((edge) => {
+        const source = props.nodes.find((node) => node.id === edge.source)
+        const target = props.nodes.find((node) => node.id === edge.target)
+        const feedback = isFeedbackRejectEdge(edge, props.edges)
+        const routePoints =
+          feedback && source && target
+            ? getRejectRoutePoints(
+                source.position.x + 154,
+                source.position.y + 29,
+                target.position.x,
+                target.position.y + 29,
+                props.nodes,
+              )
+            : edge.data?.routePoints
+        return {
+          ...edge,
+          type: 'workflowRoute',
+          data: { ...edge.data, feedback, routePoints },
+          selected: edge.id === props.selectedEdgeId,
+        }
+      }),
+    [props.edges, props.nodes, props.selectedEdgeId],
   )
   const applyNodeChanges = props.onNodesChange
   const applyEdgeChanges = props.onEdgesChange
   const connectNodes = props.onConnect
   const markChanged = props.onChange
+  const invalidateRoutes = props.onNodeMove
   const selectNode = props.onNodeSelect
   const selectEdge = props.onEdgeSelect
   const handleNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       applyNodeChanges(changes)
-      if (changes.some((change) => change.type === 'position' && change.dragging === false))
+      const moveFinished = changes.some(
+        (change) => change.type === 'position' && change.dragging === false,
+      )
+      if (moveFinished) {
+        invalidateRoutes()
         markChanged()
+      }
     },
-    [applyNodeChanges, markChanged],
+    [applyNodeChanges, invalidateRoutes, markChanged],
   )
   const handleEdgesChange = useCallback(
     (changes: EdgeChange<CanvasEdge>[]) => {
@@ -1219,6 +1506,7 @@ function FlowCanvas(props: {
       nodes={props.nodes}
       edges={displayEdges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       onNodesChange={handleNodesChange}
       onEdgesChange={handleEdgesChange}
       onConnect={handleConnect}

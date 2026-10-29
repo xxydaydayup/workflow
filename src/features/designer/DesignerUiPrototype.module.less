@@ -406,6 +406,11 @@
   align-items: baseline;
   gap: 9px;
 }
+.canvasActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
 .canvasHeading span {
   overflow: hidden;
   color: #8b9991;
@@ -614,6 +619,39 @@
   display: flex;
   flex-direction: column;
   border-left: 1px solid #e6ece8;
+}
+.emptyProperties {
+  display: flex;
+  min-height: 220px;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #809087;
+  text-align: center;
+}
+.emptyPropertiesIcon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 12px;
+  place-items: center;
+  border: 1px solid #e3ebe5;
+  border-radius: 50%;
+  color: #71887a;
+  font-size: 18px;
+}
+.emptyProperties strong {
+  color: #43594b;
+  font-size: 12px;
+}
+.emptyProperties p {
+  max-width: 190px;
+  margin: 6px 0 0;
+  color: #8c9a91;
+  font-size: 10px;
+  line-height: 1.6;
 }
 .propertyHeader {
   min-height: 68px;

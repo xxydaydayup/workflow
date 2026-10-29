@@ -5,7 +5,6 @@ export type WorkflowNodeData = {
   kind: WorkflowNodeType
   name: string
   form?: string
-  assignee?: string
   sequential?: boolean
   reminderEnabled?: boolean
   reminderDuration?: string
@@ -16,7 +15,12 @@ export type WorkflowNodeData = {
   passRate?: string
 }
 
-export type WorkflowEdgeData = { branch?: 'pass' | 'reject'; conditionExpression?: string }
+export type WorkflowEdgeData = {
+  branch?: 'pass' | 'reject'
+  conditionExpression?: string
+  routePoints?: { x: number; y: number }[]
+  feedback?: boolean
+}
 export type WorkflowCanvasNode = Node<WorkflowNodeData, 'workflowNode'>
 export type WorkflowCanvasEdge = Edge<WorkflowEdgeData>
 
@@ -56,9 +60,6 @@ export function toWorkflowModel(
       x: Math.round(position.x),
       y: Math.round(position.y),
       ...(data.form?.trim() ? { form: data.form.trim() } : {}),
-      ...(data.kind === 'approval' && data.assignee?.trim()
-        ? { assignee: data.assignee.trim() }
-        : {}),
       ...(data.kind === 'countersign' ? { sequential: data.sequential ?? false } : {}),
       ...((data.kind === 'approval' || data.kind === 'countersign') && data.reminderEnabled
         ? {
