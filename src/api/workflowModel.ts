@@ -11,7 +11,6 @@ export interface WorkflowNode {
   x: number
   y: number
   form?: string
-  assignee?: string
   sequential?: boolean
   reminder?: { duration?: string; name?: string }
   serviceName?: string
