@@ -1,9 +1,6 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_API_BASE_URL: string
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv
+declare module 'elkjs/lib/elk-worker.min.js?url' {
+  const workerUrl: string
+  export default workerUrl
 }
